@@ -6,13 +6,16 @@ const overlay = document.getElementById('loading-overlay');
 const textStatus = document.getElementById('loading-text');
 const progressBar = document.getElementById('progress-bar');
 
-let pdfDocumentsData = new Map(); 
-let pageRegistry = []; 
-
-// Función segura para generar IDs sin depender del entorno de red (corrección de uso local)
+let pdfDocumentsData = new Map();
+let pageRegistry = [];
 const generateId = () => Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
 
+// Inicializar MultiDrag de Sortable
+Sortable.mount(new Sortable.MultiDrag());
+
 new Sortable(workspace, {
+    multiDrag: true, // Habilita mover múltiples tarjetas
+    selectedClass: 'selected', // Clase CSS que se aplica al seleccionar
     animation: 150,
     ghostClass: 'sortable-ghost',
     onEnd: () => syncRegistryWithDOM()
@@ -25,11 +28,22 @@ const dropZone = document.getElementById('drop-zone');
 dropZone.addEventListener('drop', ev => processFiles(ev.dataTransfer.files));
 document.getElementById('file-input').addEventListener('change', ev => processFiles(ev.target.files));
 
+// Listener global para eliminar hojas seleccionadas con la tecla "Suprimir"
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+        const selected = document.querySelectorAll('.page-card.selected');
+        if (selected.length > 0) {
+            selected.forEach(card => card.remove());
+            syncRegistryWithDOM();
+        }
+    }
+});
+
 async function processFiles(files) {
     const pdfs = Array.from(files).filter(f => f.type === 'application/pdf');
     if (!pdfs.length) return;
 
-    showLoader('Leyendo estructura de archivos...');
+    showLoader('Procesando archivo pesados...', true);
     btnGenerate.disabled = true;
 
     for (const file of pdfs) {
@@ -38,12 +52,18 @@ async function processFiles(files) {
         pdfDocumentsData.set(fileId, buffer);
 
         const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+        const totalPages = pdf.numPages;
         
-        for (let i = 1; i <= pdf.numPages; i++) {
-            const pageId = `${fileId}_${i}`;
+        for (let i = 1; i <= totalPages; i++) {
+            updateProgress(i, totalPages);
             
+            // Chunking: Liberar el hilo de UI cada 5 páginas para evitar congelamiento
+            if (i % 5 === 0) await new Promise(r => setTimeout(r, 1)); 
+
+            const pageId = `${fileId}_${i}`;
             const page = await pdf.getPage(i);
-            // Escala 0.15 para optimizar RAM en archivos de +350MB
+            
+            // Escala mínima 0.15 para RAM estable
             const viewport = page.getViewport({ scale: 0.15 }); 
             const canvas = document.createElement('canvas');
             canvas.width = viewport.width;
@@ -77,7 +97,14 @@ function createCardInDOM(data) {
     btnDel.innerHTML = '✖';
     btnDel.onclick = (e) => {
         e.stopPropagation(); 
-        workspace.removeChild(card);
+        
+        // Si hay varios seleccionados, eliminarlos todos. Si no, solo este.
+        const selected = document.querySelectorAll('.page-card.selected');
+        if (selected.length > 0 && card.classList.contains('selected')) {
+            selected.forEach(c => c.remove());
+        } else {
+            card.remove();
+        }
         syncRegistryWithDOM();
     };
 
@@ -131,6 +158,8 @@ btnGenerate.addEventListener('click', async () => {
         
         for (let i = 0; i < pageRegistry.length; i++) {
             updateProgress(i, pageRegistry.length);
+            // Chunking en compilación para archivos grandes
+            if (i % 10 === 0) await new Promise(r => setTimeout(r, 1)); 
             
             const req = pageRegistry[i];
             const srcDoc = loadedDocs.get(req.fileId);
@@ -143,7 +172,6 @@ btnGenerate.addEventListener('click', async () => {
 
             finalPdf.addPage(copiedPage);
 
-            // Estructura fija de Foleo: 001, 002... en esquina superior derecha
             if (applyFoleo) {
                 const fStr = folioNum.toString().padStart(3, '0');
                 const { width, height } = copiedPage.getSize();
