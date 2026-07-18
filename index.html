@@ -12,36 +12,35 @@
 </head>
 <body>
 
-    <header>
-        <h1>UNIFICADOR SEDAPAL</h1>
-    </header>
+    <div class="portal-container">
+        <header>
+            <h1>UNIFICADOR SEDAPAL</h1>
+        </header>
 
-    <main>
-        <div id="drop-zone" class="drop-zone" onclick="document.getElementById('file-input').click()">
-            <input type="file" id="file-input" multiple accept="application/pdf">
-        </div>
+        <main>
+            <div id="drop-zone" class="drop-zone" onclick="document.getElementById('file-input').click()"></div>
+            <input type="file" id="file-input" multiple accept="application/pdf" style="display: none;">
 
-        <div class="controls-panel">
-            <label class="control-item">
-                <input type="checkbox" id="chk-foleo">
-                Foleo
-            </label>
-            
-            <label class="control-item">
-                Iniciar en:
-                <input type="number" id="folio-start" value="1" min="1">
-            </label>
+            <div class="controls-panel">
+                <label class="control-item">
+                    <input type="checkbox" id="chk-foleo"> Foleo
+                </label>
+                
+                <label class="control-item">
+                    Iniciar en:
+                    <input type="number" id="folio-start" value="1" min="1">
+                </label>
 
-            <label class="control-item">
-                <input type="checkbox" id="chk-optimize" checked>
-                Optimizar Peso
-            </label>
-        </div>
+                <label class="control-item">
+                    <input type="checkbox" id="chk-optimize" checked> Optimizar Peso
+                </label>
+            </div>
 
-        <div id="workspace" class="workspace"></div>
+            <div id="workspace" class="workspace"></div>
 
-        <button id="btn-generate" class="btn-primary" disabled>Unificar y Descargar</button>
-    </main>
+            <button id="btn-generate" class="btn-primary" disabled>Unificar y Descargar</button>
+        </main>
+    </div>
 
     <div id="loading-overlay" class="overlay hidden">
         <div class="loader"></div>
