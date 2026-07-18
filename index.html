@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UNIFICADOR SEDAPAL</title>
+    <link rel="stylesheet" href="styles.css">
+    
+    <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
+</head>
+<body>
+
+    <header>
+        <h1>UNIFICADOR SEDAPAL</h1>
+    </header>
+
+    <main>
+        <div id="drop-zone" class="drop-zone" onclick="document.getElementById('file-input').click()">
+            <input type="file" id="file-input" multiple accept="application/pdf">
+        </div>
+
+        <div class="controls-panel">
+            <label class="control-item">
+                <input type="checkbox" id="chk-foleo">
+                Foleo
+            </label>
+            
+            <label class="control-item">
+                Iniciar en:
+                <input type="number" id="folio-start" value="1" min="1">
+            </label>
+
+            <label class="control-item">
+                <input type="checkbox" id="chk-optimize" checked>
+                Optimizar Peso
+            </label>
+        </div>
+
+        <div id="workspace" class="workspace"></div>
+
+        <button id="btn-generate" class="btn-primary" disabled>Unificar y Descargar</button>
+    </main>
+
+    <div id="loading-overlay" class="overlay hidden">
+        <div class="loader"></div>
+        <div id="loading-text">Procesando...</div>
+        <progress id="progress-bar" value="0" max="100" class="hidden"></progress>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
