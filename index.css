@@ -6,7 +6,7 @@
 }
 
 body {
-    background-color: #e9ecef; /* Fondo gris claro, no intemperie */
+    background-color: #e9ecef;
     color: #333;
     display: flex;
     justify-content: center;
@@ -34,7 +34,7 @@ header {
 
 header h1 {
     font-size: 24px;
-    color: #00529b; /* Azul corporativo */
+    color: #00529b;
     letter-spacing: 0.5px;
 }
 
@@ -115,6 +115,14 @@ main {
     border-radius: 4px;
     user-select: none;
     overflow: hidden;
+    transition: transform 0.1s, border-color 0.2s;
+}
+
+/* Estilos para la selección múltiple */
+.page-card.selected {
+    border: 3px solid #00529b;
+    background-color: #e6f0fa;
+    transform: scale(0.95);
 }
 
 .page-card:active {
@@ -129,7 +137,6 @@ main {
 .page-image {
     max-width: 95%;
     max-height: 95%;
-    transition: transform 0.2s ease;
     pointer-events: none;
 }
 
