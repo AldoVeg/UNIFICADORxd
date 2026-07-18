@@ -1,34 +1,48 @@
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+// Validación segura del motor PDF.js
+if (typeof pdfjsLib !== 'undefined') {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+} else {
+    alert("Error de red: No se pudo cargar el motor PDF. Revisa tu conexión.");
+}
 
 const workspace = document.getElementById('workspace');
 const btnGenerate = document.getElementById('btn-generate');
 const overlay = document.getElementById('loading-overlay');
 const textStatus = document.getElementById('loading-text');
 const progressBar = document.getElementById('progress-bar');
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
 
 let pdfDocumentsData = new Map();
 let pageRegistry = [];
 const generateId = () => Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
 
-// Inicializar MultiDrag de Sortable
-Sortable.mount(new Sortable.MultiDrag());
-
+// Inicialización estable de Sortable (Arrastre visual)
 new Sortable(workspace, {
-    multiDrag: true, // Habilita mover múltiples tarjetas
-    selectedClass: 'selected', // Clase CSS que se aplica al seleccionar
     animation: 150,
     ghostClass: 'sortable-ghost',
+    delay: 100, // Evita conflictos entre dar clic para seleccionar y arrastrar
+    delayOnTouchOnly: true,
     onEnd: () => syncRegistryWithDOM()
 });
 
-const dropZone = document.getElementById('drop-zone');
-['dragover', 'dragenter'].forEach(e => dropZone.addEventListener(e, ev => { ev.preventDefault(); dropZone.classList.add('drag-over'); }));
-['dragleave', 'drop'].forEach(e => dropZone.addEventListener(e, ev => { ev.preventDefault(); dropZone.classList.remove('drag-over'); }));
+// Eventos seguros para la zona de carga
+dropZone.addEventListener('click', () => fileInput.click());
+
+['dragover', 'dragenter'].forEach(e => dropZone.addEventListener(e, ev => { 
+    ev.preventDefault(); 
+    dropZone.classList.add('drag-over'); 
+}));
+
+['dragleave', 'drop'].forEach(e => dropZone.addEventListener(e, ev => { 
+    ev.preventDefault(); 
+    dropZone.classList.remove('drag-over'); 
+}));
 
 dropZone.addEventListener('drop', ev => processFiles(ev.dataTransfer.files));
-document.getElementById('file-input').addEventListener('change', ev => processFiles(ev.target.files));
+fileInput.addEventListener('change', ev => processFiles(ev.target.files));
 
-// Listener global para eliminar hojas seleccionadas con la tecla "Suprimir"
+// Listener global: Borrar múltiples páginas con la tecla Suprimir
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Delete' || e.key === 'Backspace') {
         const selected = document.querySelectorAll('.page-card.selected');
@@ -40,10 +54,18 @@ document.addEventListener('keydown', (e) => {
 });
 
 async function processFiles(files) {
-    const pdfs = Array.from(files).filter(f => f.type === 'application/pdf');
-    if (!pdfs.length) return;
+    // FILTRO FORTIFICADO: Verifica el MIME type o la extensión del archivo
+    const pdfs = Array.from(files).filter(f => 
+        f.type === 'application/pdf' || 
+        f.name.toLowerCase().endsWith('.pdf')
+    );
 
-    showLoader('Procesando archivo pesados...', true);
+    if (pdfs.length === 0) {
+        alert("Por favor, sube únicamente archivos en formato PDF.");
+        return;
+    }
+
+    showLoader('Procesando páginas...', true);
     btnGenerate.disabled = true;
 
     for (const file of pdfs) {
@@ -51,40 +73,45 @@ async function processFiles(files) {
         const buffer = await file.arrayBuffer();
         pdfDocumentsData.set(fileId, buffer);
 
-        const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
-        const totalPages = pdf.numPages;
-        
-        for (let i = 1; i <= totalPages; i++) {
-            updateProgress(i, totalPages);
+        try {
+            const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+            const totalPages = pdf.numPages;
             
-            // Chunking: Liberar el hilo de UI cada 5 páginas para evitar congelamiento
-            if (i % 5 === 0) await new Promise(r => setTimeout(r, 1)); 
+            for (let i = 1; i <= totalPages; i++) {
+                updateProgress(i, totalPages);
+                
+                // Micro-pausa obligatoria para evitar congelamiento de RAM
+                if (i % 5 === 0) await new Promise(r => setTimeout(r, 1)); 
 
-            const pageId = `${fileId}_${i}`;
-            const page = await pdf.getPage(i);
-            
-            // Escala mínima 0.15 para RAM estable
-            const viewport = page.getViewport({ scale: 0.15 }); 
-            const canvas = document.createElement('canvas');
-            canvas.width = viewport.width;
-            canvas.height = viewport.height;
-            await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+                const pageId = `${fileId}_${i}`;
+                const page = await pdf.getPage(i);
+                
+                const viewport = page.getViewport({ scale: 0.15 }); 
+                const canvas = document.createElement('canvas');
+                canvas.width = viewport.width;
+                canvas.height = viewport.height;
+                await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
 
-            const nodeData = {
-                id: pageId,
-                fileId: fileId,
-                pageIndex: i - 1, 
-                rotation: 0,
-                thumb: canvas.toDataURL('image/jpeg', 0.5) 
-            };
-            
-            pageRegistry.push(nodeData);
-            createCardInDOM(nodeData);
+                const nodeData = {
+                    id: pageId,
+                    fileId: fileId,
+                    pageIndex: i - 1, 
+                    rotation: 0,
+                    thumb: canvas.toDataURL('image/jpeg', 0.5) 
+                };
+                
+                pageRegistry.push(nodeData);
+                createCardInDOM(nodeData);
+            }
+        } catch (error) {
+            console.error("Error al leer el archivo PDF: ", error);
         }
     }
 
     btnGenerate.disabled = pageRegistry.length === 0;
     hideLoader();
+    // Limpiamos el input para permitir subir el mismo archivo dos veces si el usuario lo desea
+    fileInput.value = "";
 }
 
 function createCardInDOM(data) {
@@ -92,18 +119,25 @@ function createCardInDOM(data) {
     card.className = 'page-card';
     card.dataset.id = data.id;
 
+    // Lógica propia e irrompible de Selección Múltiple (clic simple)
+    card.addEventListener('click', (e) => {
+        // Ignora el clic si se hizo en el botón de borrar
+        if (e.target.classList.contains('btn-delete-page')) return;
+        card.classList.toggle('selected');
+    });
+
     const btnDel = document.createElement('button');
     btnDel.className = 'btn-delete-page';
     btnDel.innerHTML = '✖';
     btnDel.onclick = (e) => {
         e.stopPropagation(); 
         
-        // Si hay varios seleccionados, eliminarlos todos. Si no, solo este.
+        // Si hay varios seleccionados y hacemos clic en la X de uno de ellos, se borran todos
         const selected = document.querySelectorAll('.page-card.selected');
         if (selected.length > 0 && card.classList.contains('selected')) {
             selected.forEach(c => c.remove());
         } else {
-            card.remove();
+            card.remove(); // Borra solo esta si no estaba seleccionada
         }
         syncRegistryWithDOM();
     };
@@ -113,7 +147,9 @@ function createCardInDOM(data) {
     img.src = data.thumb;
     img.dataset.rotation = 0;
 
-    card.ondblclick = () => {
+    // Rotación con Doble Clic
+    card.ondblclick = (e) => {
+        e.stopPropagation();
         const currentRot = (parseInt(img.dataset.rotation) + 90) % 360;
         img.dataset.rotation = currentRot;
         img.style.transform = `rotate(${currentRot}deg)`;
@@ -158,7 +194,8 @@ btnGenerate.addEventListener('click', async () => {
         
         for (let i = 0; i < pageRegistry.length; i++) {
             updateProgress(i, pageRegistry.length);
-            // Chunking en compilación para archivos grandes
+            
+            // Chunking en compilación 
             if (i % 10 === 0) await new Promise(r => setTimeout(r, 1)); 
             
             const req = pageRegistry[i];
