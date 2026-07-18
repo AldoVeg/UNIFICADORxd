@@ -1,4 +1,3 @@
-// Configuración de Worker local para evitar bloqueos del navegador
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
 
 const workspace = document.getElementById('workspace');
@@ -7,19 +6,18 @@ const overlay = document.getElementById('loading-overlay');
 const textStatus = document.getElementById('loading-text');
 const progressBar = document.getElementById('progress-bar');
 
-let pdfDocumentsData = new Map(); // Almacena ArrayBuffers para optimizar RAM
-let pageRegistry = []; // Control del orden visual y rotaciones
+let pdfDocumentsData = new Map(); 
+let pageRegistry = []; 
 
-// Inicialización de Drag & Drop Libre (Librería SortableJS)
+// Función segura para generar IDs sin depender del entorno de red (corrección de uso local)
+const generateId = () => Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
+
 new Sortable(workspace, {
     animation: 150,
     ghostClass: 'sortable-ghost',
-    onEnd: () => {
-        syncRegistryWithDOM();
-    }
+    onEnd: () => syncRegistryWithDOM()
 });
 
-// Eventos de la zona de carga
 const dropZone = document.getElementById('drop-zone');
 ['dragover', 'dragenter'].forEach(e => dropZone.addEventListener(e, ev => { ev.preventDefault(); dropZone.classList.add('drag-over'); }));
 ['dragleave', 'drop'].forEach(e => dropZone.addEventListener(e, ev => { ev.preventDefault(); dropZone.classList.remove('drag-over'); }));
@@ -35,7 +33,7 @@ async function processFiles(files) {
     btnGenerate.disabled = true;
 
     for (const file of pdfs) {
-        const fileId = crypto.randomUUID();
+        const fileId = generateId();
         const buffer = await file.arrayBuffer();
         pdfDocumentsData.set(fileId, buffer);
 
@@ -44,9 +42,9 @@ async function processFiles(files) {
         for (let i = 1; i <= pdf.numPages; i++) {
             const pageId = `${fileId}_${i}`;
             
-            // Renderizado diferido y de baja resolución para soportar archivos de +350MB
             const page = await pdf.getPage(i);
-            const viewport = page.getViewport({ scale: 0.2 }); 
+            // Escala 0.15 para optimizar RAM en archivos de +350MB
+            const viewport = page.getViewport({ scale: 0.15 }); 
             const canvas = document.createElement('canvas');
             canvas.width = viewport.width;
             canvas.height = viewport.height;
@@ -55,9 +53,9 @@ async function processFiles(files) {
             const nodeData = {
                 id: pageId,
                 fileId: fileId,
-                pageIndex: i - 1, // base 0 para pdf-lib
+                pageIndex: i - 1, 
                 rotation: 0,
-                thumb: canvas.toDataURL('image/jpeg', 0.5) // Compresión base 64 rápida
+                thumb: canvas.toDataURL('image/jpeg', 0.5) 
             };
             
             pageRegistry.push(nodeData);
@@ -74,23 +72,20 @@ function createCardInDOM(data) {
     card.className = 'page-card';
     card.dataset.id = data.id;
 
-    // Botón eliminar
     const btnDel = document.createElement('button');
     btnDel.className = 'btn-delete-page';
     btnDel.innerHTML = '✖';
     btnDel.onclick = (e) => {
-        e.stopPropagation(); // Evita conflicto con el Drag & Drop
+        e.stopPropagation(); 
         workspace.removeChild(card);
         syncRegistryWithDOM();
     };
 
-    // Imagen miniatura
     const img = document.createElement('img');
     img.className = 'page-image';
     img.src = data.thumb;
     img.dataset.rotation = 0;
 
-    // Doble clic para rotar 90°
     card.ondblclick = () => {
         const currentRot = (parseInt(img.dataset.rotation) + 90) % 360;
         img.dataset.rotation = currentRot;
@@ -105,14 +100,10 @@ function createCardInDOM(data) {
     workspace.appendChild(card);
 }
 
-// Mantiene sincronizado el array lógico con el movimiento físico hecho con el mouse
 function syncRegistryWithDOM() {
     const newOrder = [];
-    const domCards = Array.from(workspace.children);
-    
-    domCards.forEach(card => {
-        const id = card.dataset.id;
-        const record = pageRegistry.find(p => p.id === id);
+    Array.from(workspace.children).forEach(card => {
+        const record = pageRegistry.find(p => p.id === card.dataset.id);
         if(record) newOrder.push(record);
     });
     
@@ -132,7 +123,6 @@ btnGenerate.addEventListener('click', async () => {
         const finalPdf = await PDFLib.PDFDocument.create();
         const loadedDocs = new Map();
 
-        // Carga dinámica de documentos fuente en memoria pdf-lib
         for (const [fileId, buffer] of pdfDocumentsData.entries()) {
             loadedDocs.set(fileId, await PDFLib.PDFDocument.load(buffer, { ignoreEncryption: true }));
         }
@@ -146,7 +136,6 @@ btnGenerate.addEventListener('click', async () => {
             const srcDoc = loadedDocs.get(req.fileId);
             const [copiedPage] = await finalPdf.copyPages(srcDoc, [req.pageIndex]);
             
-            // Aplicar rotación visual originada por el usuario
             if (req.rotation !== 0) {
                 const currentRot = copiedPage.getRotation().angle;
                 copiedPage.setRotation(PDFLib.degrees(currentRot + req.rotation));
@@ -154,19 +143,19 @@ btnGenerate.addEventListener('click', async () => {
 
             finalPdf.addPage(copiedPage);
 
-            // Aplicar Foleo Estricto (001, 002)
+            // Estructura fija de Foleo: 001, 002... en esquina superior derecha
             if (applyFoleo) {
                 const fStr = folioNum.toString().padStart(3, '0');
                 const { width, height } = copiedPage.getSize();
                 
                 copiedPage.drawRectangle({
-                    x: width - 45, y: height - 25,
-                    width: 35, height: 15,
+                    x: width - 40, y: height - 25,
+                    width: 30, height: 16,
                     color: PDFLib.rgb(1, 1, 1)
                 });
 
                 copiedPage.drawText(fStr, {
-                    x: width - 40, y: height - 20,
+                    x: width - 36, y: height - 21,
                     size: 11, font: font,
                     color: PDFLib.rgb(0, 0, 0)
                 });
@@ -174,18 +163,17 @@ btnGenerate.addEventListener('click', async () => {
             }
         }
 
-        // Parámetro de optimización de compresión base de pdf-lib
         const saveOptions = optimize ? { useObjectStreams: true } : {};
         const finalBytes = await finalPdf.save(saveOptions);
 
         const blob = new Blob([finalBytes], { type: 'application/pdf' });
         const link = document.createElement('a');
         link.href = URL.createObjectURL(blob);
-        link.download = `SEDAPAL_Unificado_${new Date().getTime()}.pdf`;
+        link.download = `SEDAPAL_Unificado_${new Date().toISOString().split('T')[0]}.pdf`;
         link.click();
 
     } catch (e) {
-        alert("Error en la unificación: " + e.message);
+        alert("Error crítico durante la unificación: " + e.message);
     } finally {
         hideLoader();
     }
