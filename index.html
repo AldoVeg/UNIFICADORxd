@@ -4,76 +4,60 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="X-Content-Type-Options" content="nosniff">
-    <meta name="description" content="Unificador de documentos PDF para SEDAPAL">
     <title>UNIFICADOR SEDAPAL</title>
 
-    <!-- Hoja de estilos externa (robusta) -->
+    <!-- CDN: pdf-lib (compilación final) -->
+    <script defer src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"
+            onerror="document.getElementById('cdn-error').classList.remove('hidden')"></script>
+
+    <!-- CDN: pdf.js (renderizado de miniaturas) -->
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"
+            onerror="document.getElementById('cdn-error').classList.remove('hidden')"></script>
+
+    <!-- CDN: SortableJS (arrastre) -->
+    <script defer src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"
+            onerror="console.warn('SortableJS no disponible — el arrastre funcionará con respaldo nativo.')"></script>
+
+    <!-- Estilos locales -->
     <link rel="stylesheet" href="index.css">
-
-    <!-- Dependencias externas con integridad verificable -->
-    <!-- pdf-lib: manipulación de PDFs -->
-    <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"
-            integrity="sha384-..."
-            crossorigin="anonymous"
-            onerror="document.getElementById('err-deps').classList.remove('hidden')">
-    </script>
-
-    <!-- pdf.js: renderizado de vistas previas -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"
-            integrity="sha384-..."
-            crossorigin="anonymous"
-            onerror="document.getElementById('err-deps').classList.remove('hidden')">
-    </script>
-
-    <!-- SortableJS: arrastre de tarjetas -->
-    <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"
-            onerror="console.warn('SortableJS no disponible — el ordenamiento manual seguirá funcionando')">
-    </script>
 </head>
 <body>
 
-    <!-- ============================================================ -->
-    <!-- BANNER DE ERROR POR DEPENDENCIAS CAÍDAS                      -->
-    <!-- ============================================================ -->
-    <div id="err-deps" class="banner-error hidden" role="alert">
-        <span class="banner-icon">⚠️</span>
-        <span>Error de red: una o más librerías no pudieron cargarse. Verifica tu conexión e intenta de nuevo.</span>
-        <button class="banner-close" onclick="this.parentElement.classList.add('hidden')" aria-label="Cerrar">&times;</button>
+    <!-- Banner de error si fallan los CDN -->
+    <div id="cdn-error" class="cdn-error-banner hidden" role="alert">
+        ⚠️ No se pudieron cargar las librerías externas. Verifica tu conexión a internet y recarga la página.
     </div>
 
-    <!-- ============================================================ -->
-    <!-- CONTENEDOR PRINCIPAL                                         -->
-    <!-- ============================================================ -->
-    <div class="portal-container">
+    <!-- Toast para notificaciones -->
+    <div id="toast-container" aria-live="polite"></div>
 
-        <!-- CABECERA -->
+    <div class="portal-container">
         <header>
             <h1>UNIFICADOR SEDAPAL</h1>
-            <p class="subtitle">Arrastra, ordena, rota y unifica tus documentos PDF</p>
+            <p class="subtitle">Arrastra, ordena, rota y unifica tus PDFs</p>
         </header>
 
-        <!-- CUERPO PRINCIPAL -->
         <main>
-            <!-- Zona de carga de archivos -->
-            <div id="drop-zone" class="drop-zone" tabindex="0" role="button"
-                 aria-label="Haz clic o arrastra aquí tus archivos PDF">
-                <div class="drop-zone-content">
-                    <svg class="drop-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#00529b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                        <polyline points="17 8 12 3 7 8"/>
-                        <line x1="12" y1="3" x2="12" y2="15"/>
-                    </svg>
-                    <span class="drop-text">Haz clic o arrastra aquí tus <strong>PDFs</strong></span>
-                    <span class="drop-hint">Se aceptan múltiples archivos</span>
-                </div>
+            <!-- Zona de carga -->
+            <div id="drop-zone"
+                 class="drop-zone"
+                 role="button"
+                 tabindex="0"
+                 aria-label="Zona de carga de archivos PDF. Haz clic o arrastra aquí.">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#00529b" stroke-width="1.5" aria-hidden="true">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                    <line x1="12" y1="18" x2="12" y2="12"/>
+                    <line x1="9" y1="15" x2="12" y2="12"/>
+                    <line x1="15" y1="15" x2="12" y2="12"/>
+                </svg>
+                <span>Haz clic o arrastra aquí tus PDFs</span>
             </div>
-
-            <!-- Input de archivos oculto -->
             <input type="file" id="file-input" multiple accept=".pdf,application/pdf" aria-hidden="true">
 
             <!-- Panel de controles -->
             <fieldset class="controls-panel">
-                <legend class="sr-only">Opciones de unificación</legend>
+                <legend>Opciones de salida</legend>
 
                 <label class="control-item">
                     <input type="checkbox" id="chk-foleo">
@@ -82,34 +66,25 @@
 
                 <label class="control-item">
                     <span>Iniciar en:</span>
-                    <input type="number" id="folio-start" value="1" min="1" max="999999"
-                           aria-label="Número de folio inicial">
+                    <input type="number" id="folio-start" value="1" min="1" max="9999" aria-label="Número de folio inicial">
                 </label>
 
                 <label class="control-item">
                     <input type="checkbox" id="chk-optimize" checked>
                     <span>Optimizar peso</span>
                 </label>
-
-                <button type="button" id="btn-clear-all" class="btn-secondary" disabled>
-                    Limpiar todo
-                </button>
             </fieldset>
 
-            <!-- Espacio de trabajo (tarjetas de páginas) -->
-            <div id="workspace" class="workspace" aria-label="Páginas cargadas — arrastra para reordenar">
-                <!-- Las tarjetas se generan dinámicamente con JS -->
+            <!-- Workspace: aquí se renderizan las miniaturas -->
+            <div id="workspace"
+                 class="workspace"
+                 aria-label="Área de trabajo. Las páginas aparecen aquí como miniaturas ordenables."
+                 data-empty="No hay páginas. Arrastra uno o más PDFs para comenzar.">
             </div>
 
-            <!-- Barra de estado -->
-            <div id="status-bar" class="status-bar hidden" aria-live="polite">
-                <span id="status-text"></span>
-            </div>
-
-            <!-- Botón de acción principal -->
-            <button id="btn-generate" class="btn-primary" disabled
-                    aria-label="Unificar y descargar documento PDF">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <!-- Botón de unificación -->
+            <button id="btn-generate" class="btn-primary" disabled aria-disabled="true">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
                     <polyline points="7 10 12 15 17 10"/>
                     <line x1="12" y1="15" x2="12" y2="3"/>
@@ -118,27 +93,19 @@
             </button>
         </main>
 
-        <!-- PIE -->
         <footer>
-            <small>SEDAPAL &copy; <span id="current-year"></span> — Herramienta interna de unificación documental</small>
+            <small>Unificador SEDAPAL &copy; <span id="current-year"></span> — Todas las páginas se procesan localmente en tu navegador.</small>
         </footer>
     </div>
 
-    <!-- ============================================================ -->
-    <!-- OVERLAY DE CARGA                                             -->
-    <!-- ============================================================ -->
-    <div id="loading-overlay" class="overlay hidden" role="dialog" aria-modal="true" aria-label="Procesando">
-        <div class="loader-spinner"></div>
-        <p id="loading-text" class="loading-text">Procesando...</p>
-        <progress id="progress-bar" value="0" max="100" class="hidden"></progress>
+    <!-- Overlay de carga -->
+    <div id="loading-overlay" class="overlay hidden" role="alert" aria-live="assertive">
+        <div class="loader" aria-hidden="true"></div>
+        <p id="loading-text">Procesando...</p>
+        <progress id="progress-bar" value="0" max="100" aria-label="Progreso del procesamiento"></progress>
     </div>
 
-    <!-- ============================================================ -->
-    <!-- TOAST DE NOTIFICACIONES                                      -->
-    <!-- ============================================================ -->
-    <div id="toast-container" class="toast-container" aria-live="assertive"></div>
-
-    <!-- Script principal (robusto) -->
-    <script src="index.js"></script>
+    <!-- Script principal (defer garantiza que corre después de los CDN) -->
+    <script defer src="index.js"></script>
 </body>
 </html>
