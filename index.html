@@ -8,7 +8,7 @@
     
     <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
 </head>
 <body>
 
@@ -18,8 +18,10 @@
         </header>
 
         <main>
-            <div id="drop-zone" class="drop-zone" onclick="document.getElementById('file-input').click()"></div>
-            <input type="file" id="file-input" multiple accept="application/pdf" style="display: none;">
+            <div id="drop-zone" class="drop-zone">
+                <span style="color: #00529b; font-weight: bold; margin: auto;">Haz clic o arrastra aquí tus PDFs</span>
+            </div>
+            <input type="file" id="file-input" multiple accept=".pdf, application/pdf" style="display: none;">
 
             <div class="controls-panel">
                 <label class="control-item">
