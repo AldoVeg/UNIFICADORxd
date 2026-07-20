@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════
-   index.js — Generador de PDF SEDAPAL (Fortificado)
-   IIFE estricto · Validación CDN · Compresión de
-   imágenes · Canvas offscreen · Foleo Inverso Opcional
+   index.js — UNIFICADOR SEDAPAL (Fortificado v3)
+   IIFE estricto · Foleo normal + inverso · Memoria
+   controlada · Selección múltiple · Atajos teclado
    ═══════════════════════════════════════════════ */
 
 (function () {
@@ -14,75 +14,72 @@
     init();
   }
 
-  /* ═══════════════════════════════════════════════
-     INIT
-     ═══════════════════════════════════════════════ */
   function init() {
 
     /* ── Validación de CDNs ── */
-    if (typeof html2canvas === 'undefined') {
-      showToast('Librería html2canvas no disponible. Verifica tu conexión.', 'error');
+    if (typeof pdfjsLib === 'undefined') {
+      var banner = document.getElementById('cdn-error');
+      if (banner) banner.classList.remove('hidden');
       return;
     }
-    if (typeof window.jspdf === 'undefined' || typeof window.jspdf.jsPDF === 'undefined') {
-      showToast('Librería jsPDF no disponible. Verifica tu conexión.', 'error');
+
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+
+    if (typeof PDFLib === 'undefined') {
+      var banner2 = document.getElementById('cdn-error');
+      if (banner2) banner2.classList.remove('hidden');
       return;
     }
 
     /* ── Referencias DOM cacheadas ── */
     var DOM = {
-      tipoEvento:       document.getElementById('tipoEvento'),
-      comboSub:         document.getElementById('subCategoria'),
-      inputInstitucion: document.getElementById('institucion'),
-      inputDistrito:    document.getElementById('distrito'),
-      inputFecha:       document.getElementById('fecha'),
-      chkFoleo:         document.getElementById('chkFoleo'), // Nuevo: Casillero opcional de foleo
-      btnGenerar:       document.getElementById('btnGenerar'),
+      workspace:        document.getElementById('workspace'),
+      btnGenerate:      document.getElementById('btn-generate'),
       overlay:          document.getElementById('loading-overlay'),
       loadingText:      document.getElementById('loading-text'),
       progressBar:      document.getElementById('progress-bar'),
-      template:         document.getElementById('pdf-template'),
-      offscreenCanvas:  document.getElementById('offscreen-canvas'),
-      cdnError:         document.getElementById('cdn-error')
+      dropZone:         document.getElementById('drop-zone'),
+      fileInput:        document.getElementById('file-input'),
+      chkFoleo:         document.getElementById('chk-foleo'),
+      chkFoleoInverso:  document.getElementById('chk-foleo-inverso'),
+      lblFoleoInverso:  document.getElementById('lbl-foleo-inverso'),
+      chkOptimize:      document.getElementById('chk-optimize'),
+      folioStart:       document.getElementById('folio-start'),
+      currentYear:      document.getElementById('current-year')
     };
 
     /* ── Estado interno ── */
-    var imagenes = { 1: null, 2: null, 3: null, 4: null };
-    var imagenesComprimidas = { 1: null, 2: null, 3: null, 4: null };
-    var btnOriginalText = DOM.btnGenerar ? DOM.btnGenerar.innerHTML : 'Generar PDF';
-    var isGenerating = false;
+    var pdfDocumentsData = new Map();   // fileId → ArrayBuffer
+    var pageRegistry = [];              // [{ id, fileId, pageIndex, rotation, thumb }]
+    var revokedUrls = new Set();        // tracking de ObjectURLs
 
-    /* ── Diccionario de subcategorías ── */
-    var subCategoriasPorEvento = {
-      "VISITA_IE":        ["INSTITUCIÓN EDUCATIVA", "COLEGIO"],
-      "VISITA_ADULTOS":   ["UNIVERSIDAD NACIONAL", "UNIVERSIDAD PRIVADA"],
-      "TALLER_IE":        ["UNIVERSIDAD NACIONAL", "UNIVERSIDAD PRIVADA", "INSTITUTO", "INSTITUCIÓN EDUCATIVA", "COLEGIO", "CEBA", "INICIAL", "NIDO"],
-      "TALLER_EMPRESAS":  ["SEDAPAL", "MUNICIPALIDAD", "UNIVERSIDAD NACIONAL", "UNIVERSIDAD PRIVADA", "CENTRO COMERCIAL"],
-      "TALLER_COMUNIDAD": ["MERCADO", "URBANIZACIÓN", "ASOCIACIÓN", "A.H."]
-    };
+    /* ── Año dinámico en footer ── */
+    if (DOM.currentYear) {
+      DOM.currentYear.textContent = new Date().getFullYear();
+    }
 
-    /* ── Tamaño máximo de imagen (bytes) ── */
-    var MAX_FILE_SIZE = 15 * 1024 * 1024; // 15 MB
-
-    /* ── Dimensiones de compresión ── */
-    var COMPRESS_WIDTH  = 1600;
-    var COMPRESS_HEIGHT = 1200;
-    var COMPRESS_QUALITY = 0.85;
+    /* ── Generador de IDs ── */
+    function generateId() {
+      if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+        return crypto.randomUUID();
+      }
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+        var r = Math.random() * 16 | 0;
+        var v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+      });
+    }
 
     /* ═══════════════════════════════════════════════
-       UTILIDADES
+       TOAST / LOADER / PROGRESS
        ═══════════════════════════════════════════════ */
-
-    // Formatea números a 3 dígitos (Ej: 1 -> "001", 10 -> "010")
-    function padFolio(numero) {
-      return ('000' + numero).slice(-3);
-    }
 
     function showToast(msg, type) {
       var container = document.getElementById('toast-container');
       if (!container) return;
       var toast = document.createElement('div');
-      toast.className = 'toast toast-' + (type || 'error');
+      toast.className = 'toast toast-' + (type || 'info');
       toast.textContent = msg;
       toast.addEventListener('click', function () {
         toast.classList.add('toast-out');
@@ -120,444 +117,467 @@
       DOM.progressBar.classList.add('hidden');
     }
 
-    function formatearFecha(valor) {
-      if (!valor) return '';
-      var partes = valor.split('-');
-      return partes[2] + '.' + partes[1] + '.' + partes[0];
+    /* ── Timeout de seguridad para el loader ── */
+    var loaderTimeout = null;
+    function startLoaderTimeout() {
+      clearLoaderTimeout();
+      loaderTimeout = setTimeout(function () {
+        hideLoader();
+        showToast('La operación está tardando más de lo esperado. Verifica tus archivos.', 'warning');
+      }, 90000);
     }
-
-    function obtenerTituloPDF(valor) {
-      if (valor === 'VISITA_IE') return 'VISITA DE INSTITUCIÓN<br>EDUCATIVA A LA PLANTA';
-      if (valor === 'VISITA_ADULTOS')   return 'VISITA DE ADULTOS A LA PLANTA';
-      if (valor === 'TALLER_IE')        return 'TALLER A INSTITUCIONES EDUCATIVAS';
-      if (valor === 'TALLER_EMPRESAS')  return 'TALLER A EMPRESAS';
-      if (valor === 'TALLER_COMUNIDAD') return 'TALLER A LA COMUNIDAD';
-      return '';
-    }
-
-    function obtenerNombreShortFile(nombreIngresado) {
-      var texto = (nombreIngresado || '').toUpperCase().trim();
-      texto = texto.replace(/[^A-Z0-9\s\-_]/g, '');
-      texto = texto.replace(/\s+/g, '_').replace(/_+/g, '_').replace(/-+/g, '-');
-      return texto || 'documento';
-    }
-
-    function ajustarFuenteAdaptativa(elementoId, tamanoMaximoBase, forzarUnaFila) {
-      var el = document.getElementById(elementoId);
-      if (!el) return;
-      if (forzarUnaFila) {
-        el.style.whiteSpace = 'nowrap';
-      } else {
-        el.style.whiteSpace = 'normal';
-      }
-      el.style.fontSize = tamanoMaximoBase + 'px';
-      var anchoContenedor = (el.parentElement && el.parentElement.clientWidth) || 682;
-      var anchoTexto = el.scrollWidth;
-      if (anchoTexto > anchoContenedor) {
-        var nuevoTamano = Math.floor((anchoContenedor / anchoTexto) * tamanoMaximoBase);
-        if (nuevoTamano < 14) nuevoTamano = 14;
-        el.style.fontSize = nuevoTamano + 'px';
-      }
+    function clearLoaderTimeout() {
+      if (loaderTimeout) { clearTimeout(loaderTimeout); loaderTimeout = null; }
     }
 
     /* ═══════════════════════════════════════════════
-       COMPRESIÓN DE IMAGEN (Canvas Offscreen)
+       VALIDACIÓN DE MAGIC BYTES (%PDF)
        ═══════════════════════════════════════════════ */
-    function comprimirImagen(dataURL, slot) {
-      return new Promise(function (resolve, reject) {
-        var img = new Image();
-        img.onload = function () {
-          var canvas = DOM.offscreenCanvas;
-          if (!canvas) { resolve(dataURL); return; }
-          var ctx = canvas.getContext('2d');
 
-          var w = img.width;
-          var h = img.height;
-          var ratio = Math.min(COMPRESS_WIDTH / w, COMPRESS_HEIGHT / h, 1);
+    function isValidPDF(buffer) {
+      if (!buffer || buffer.byteLength < 5) return false;
+      var arr = new Uint8Array(buffer);
+      return arr[0] === 0x25 && arr[1] === 0x50 && arr[2] === 0x44 && arr[3] === 0x46; // %PDF
+    }
 
-          canvas.width  = Math.round(w * ratio);
-          canvas.height = Math.round(h * ratio);
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    /* ═══════════════════════════════════════════════
+       SINCRONIZACIÓN REGISTRO ↔ DOM
+       ═══════════════════════════════════════════════ */
 
-          var compressed = canvas.toDataURL('image/jpeg', COMPRESS_QUALITY);
-          imagenesComprimidas[slot] = compressed;
+    function syncRegistryWithDOM() {
+      var newOrder = [];
+      Array.from(DOM.workspace.children).forEach(function (card) {
+        var record = pageRegistry.find(function (p) { return p.id === card.dataset.id; });
+        if (record) newOrder.push(record);
+      });
+      pageRegistry = newOrder;
+      DOM.btnGenerate.disabled = pageRegistry.length === 0;
 
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-          resolve(compressed);
-        };
-        img.onerror = function () {
-          imagenesComprimidas[slot] = dataURL;
-          resolve(dataURL);
-        };
-        img.src = dataURL;
+      // Limpiar documentos huérfanos
+      var activeFileIds = new Set(pageRegistry.map(function (p) { return p.fileId; }));
+      pdfDocumentsData.forEach(function (_, fileId) {
+        if (!activeFileIds.has(fileId)) pdfDocumentsData.delete(fileId);
       });
     }
 
     /* ═══════════════════════════════════════════════
-       VALIDACIÓN DE CAMPOS
+       CREACIÓN DE TARJETAS EN EL DOM
        ═══════════════════════════════════════════════ */
-    function validarCampos() {
-      var errores = [];
 
-      if (!DOM.tipoEvento || !DOM.tipoEvento.value) {
-        errores.push('Selecciona un tipo de evento.');
-        if (DOM.tipoEvento) DOM.tipoEvento.classList.add('input-error');
-      } else {
-        if (DOM.tipoEvento) DOM.tipoEvento.classList.remove('input-error');
-      }
+    function createCardInDOM(data) {
+      var card = document.createElement('div');
+      card.className = 'page-card';
+      card.dataset.id = data.id;
+      card.tabIndex = 0;
 
-      if (!DOM.comboSub || !DOM.comboSub.value) {
-        errores.push('Selecciona el tipo de institución.');
-        if (DOM.comboSub) DOM.comboSub.classList.add('input-error');
-      } else {
-        if (DOM.comboSub) DOM.comboSub.classList.remove('input-error');
-      }
+      // Selección múltiple con clic
+      card.addEventListener('click', function (e) {
+        if (e.target.classList.contains('btn-delete-page')) return;
+        card.classList.toggle('selected');
+      });
 
-      if (!DOM.inputInstitucion || !DOM.inputInstitucion.value.trim()) {
-        errores.push('Ingresa el nombre de la institución.');
-        if (DOM.inputInstitucion) DOM.inputInstitucion.classList.add('input-error');
-      } else {
-        if (DOM.inputInstitucion) DOM.inputInstitucion.classList.remove('input-error');
-      }
-
-      if (!DOM.inputDistrito || !DOM.inputDistrito.value.trim()) {
-        errores.push('Ingresa el distrito.');
-        if (DOM.inputDistrito) DOM.inputDistrito.classList.add('input-error');
-      } else {
-        if (DOM.inputDistrito) DOM.inputDistrito.classList.remove('input-error');
-      }
-
-      if (!DOM.inputFecha || !DOM.inputFecha.value) {
-        errores.push('Selecciona la fecha.');
-        if (DOM.inputFecha) DOM.inputFecha.classList.add('input-error');
-      } else {
-        if (DOM.inputFecha) DOM.inputFecha.classList.remove('input-error');
-      }
-
-      for (var i = 1; i <= 4; i++) {
-        if (!imagenes[i]) {
-          errores.push('Selecciona la Foto ' + i + '.');
-          break;
+      // Botón de borrado individual
+      var btnDel = document.createElement('button');
+      btnDel.className = 'btn-delete-page';
+      btnDel.innerHTML = '✖';
+      btnDel.setAttribute('aria-label', 'Eliminar página');
+      btnDel.onclick = function (e) {
+        e.stopPropagation();
+        var selected = document.querySelectorAll('.page-card.selected');
+        if (selected.length > 0 && card.classList.contains('selected')) {
+          selected.forEach(function (c) { c.remove(); });
+        } else {
+          card.remove();
         }
-      }
+        syncRegistryWithDOM();
+      };
 
-      return errores;
+      // Imagen miniatura
+      var img = document.createElement('img');
+      img.className = 'page-image';
+      img.src = data.thumb;
+      img.dataset.rotation = 0;
+      img.alt = 'Miniatura de página';
+
+      // Rotación con doble clic
+      card.ondblclick = function (e) {
+        e.stopPropagation();
+        var currentRot = (parseInt(img.dataset.rotation, 10) + 90) % 360;
+        img.dataset.rotation = currentRot;
+        img.style.transform = 'rotate(' + currentRot + 'deg)';
+
+        var regIndex = pageRegistry.findIndex(function (p) { return p.id === data.id; });
+        if (regIndex > -1) pageRegistry[regIndex].rotation = currentRot;
+      };
+
+      card.appendChild(btnDel);
+      card.appendChild(img);
+      DOM.workspace.appendChild(card);
     }
 
     /* ═══════════════════════════════════════════════
-       GENERACIÓN DEL PDF
+       TARJETA DE PÁGINA FALLIDA
        ═══════════════════════════════════════════════ */
-    function generarPDF() {
-      if (isGenerating) return;
 
-      var errores = validarCampos();
-      if (errores.length > 0) {
-        showToast(errores[0], 'error');
+    function createFailedCard(fileId, pageNum) {
+      var card = document.createElement('div');
+      card.className = 'page-card page-failed';
+      card.dataset.id = generateId();
+      card.tabIndex = 0;
+      card.title = 'Página ' + pageNum + ' — Error al renderizar';
+
+      var icon = document.createElement('span');
+      icon.className = 'failed-icon';
+      icon.textContent = '⚠️';
+
+      var label = document.createElement('span');
+      label.className = 'failed-label';
+      label.textContent = 'Pág. ' + pageNum;
+
+      var btnDel = document.createElement('button');
+      btnDel.className = 'btn-delete-page';
+      btnDel.innerHTML = '✖';
+      btnDel.setAttribute('aria-label', 'Eliminar página fallida');
+      btnDel.onclick = function (e) {
+        e.stopPropagation();
+        card.remove();
+        syncRegistryWithDOM();
+      };
+
+      card.appendChild(btnDel);
+      card.appendChild(icon);
+      card.appendChild(label);
+      DOM.workspace.appendChild(card);
+    }
+
+    /* ═══════════════════════════════════════════════
+       PROCESAMIENTO DE ARCHIVOS PDF
+       ═══════════════════════════════════════════════ */
+
+    async function processFiles(files) {
+      var pdfs = Array.from(files).filter(function (f) {
+        return f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf');
+      });
+
+      if (pdfs.length === 0) {
+        showToast('Por favor, sube únicamente archivos en formato PDF.', 'warning');
         return;
       }
 
-      isGenerating = true;
+      showLoader('Procesando páginas...', true);
+      startLoaderTimeout();
+      DOM.btnGenerate.disabled = true;
 
-      var tipoVal          = DOM.tipoEvento.value;
-      var subCategoriaTexto = DOM.comboSub.value;
-      var nombreInstitucion = DOM.inputInstitucion.value.trim().toUpperCase();
-      var distrito          = DOM.inputDistrito.value.trim().toUpperCase();
-      var fecha             = formatearFecha(DOM.inputFecha.value);
+      for (var f = 0; f < pdfs.length; f++) {
+        var file = pdfs[f];
+        var fileId = generateId();
+        var buffer;
 
-      DOM.btnGenerar.innerHTML = '<span class="btn-icon">⏳</span> Generando PDF...';
-      DOM.btnGenerar.disabled = true;
-
-      showLoader('Comprimiendo imágenes...', true);
-
-      var promesas = [];
-      for (var i = 1; i <= 4; i++) {
-        promesas.push(comprimirImagen(imagenes[i], i));
-      }
-
-      Promise.all(promesas).then(function () {
-        updateProgress(1, 3);
-        DOM.loadingText.textContent = 'Preparando plantilla y logos...';
-
-        var titulo = obtenerTituloPDF(tipoVal);
-        var subtituloFormateado = (subCategoriaTexto + ' ' + nombreInstitucion + ' – ' + distrito).toUpperCase();
-
-        // Rellenar plantilla estructural - Página 1
-        var titulo1 = document.getElementById('pdf-titulo-1');
-        var inst1 = document.getElementById('pdf-institucion-1');
-        var fecha1 = document.getElementById('pdf-fecha-1');
-        var foto1 = document.getElementById('pdf-foto-1');
-        var foto2 = document.getElementById('pdf-foto-2');
-
-        if (titulo1) titulo1.innerHTML = titulo;
-        if (inst1) inst1.textContent = subtituloFormateado;
-        if (fecha1) fecha1.textContent = fecha;
-        if (foto1) foto1.src = imagenesComprimidas[1];
-        if (foto2) foto2.src = imagenesComprimidas[2];
-
-        // Rellenar plantilla estructural - Página 2
-        var titulo2 = document.getElementById('pdf-titulo-2');
-        var inst2 = document.getElementById('pdf-institucion-2');
-        var fecha2 = document.getElementById('pdf-fecha-2');
-        var foto3 = document.getElementById('pdf-foto-3');
-        var foto4 = document.getElementById('pdf-foto-4');
-
-        if (titulo2) titulo2.innerHTML = titulo;
-        if (inst2) inst2.textContent = subtituloFormateado;
-        if (fecha2) fecha2.textContent = fecha;
-        if (foto3) foto3.src = imagenesComprimidas[3];
-        if (foto4) foto4.src = imagenesComprimidas[4];
-
-        // ── LÓGICA DE FOLEO INVERSO OPCIONAL ──
-        var aplicarFoleo = DOM.chkFoleo ? DOM.chkFoleo.checked : false;
-        var paginasEnPlantilla = document.querySelectorAll('.pdf-pagina').length || 2; 
-        
-        var folioP1 = document.getElementById('pdf-folio-1');
-        var folioP2 = document.getElementById('pdf-folio-2');
-
-        if (aplicarFoleo) {
-          // Página 1 recibe el número mayor (Ej: 002)
-          if (folioP1) folioP1.textContent = padFolio(paginasEnPlantilla);
-          // Página 2 recibe el número menor (Ej: 001)
-          if (folioP2) folioP2.textContent = padFolio(paginasEnPlantilla - 1);
-        } else {
-          // Limpiar si el usuario no activó la opción
-          if (folioP1) folioP1.textContent = '';
-          if (folioP2) folioP2.textContent = '';
+        try {
+          buffer = await file.arrayBuffer();
+        } catch (err) {
+          showToast('Error al leer: ' + file.name, 'error');
+          continue;
         }
 
-        // Ubicar la plantilla de forma segura
-        DOM.template.style.cssText = 'display:block; position:fixed; top:0; left:0; z-index:9999; opacity:0.01; pointer-events:none;';
+        if (!isValidPDF(buffer)) {
+          showToast(file.name + ' no es un PDF válido. Se omitirá.', 'warning');
+          continue;
+        }
 
-        // Esperar descarga real del Logo PNG y Fotos
-        var todasLasImagenes = Array.from(DOM.template.querySelectorAll('img'));
-        var promesasCargaVisual = todasLasImagenes.map(function (img) {
-          if (img.complete) return Promise.resolve();
-          return new Promise(function (resolveReady) {
-            img.onload = resolveReady;
-            img.onerror = resolveReady; 
-          });
-        });
+        pdfDocumentsData.set(fileId, buffer);
 
-        Promise.all(promesasCargaVisual).then(function () {
-          // Ajuste adaptativo
-          ajustarFuenteAdaptativa('pdf-institucion-1', 25, true);
-          ajustarFuenteAdaptativa('pdf-institucion-2', 25, true);
-          var esDosFilas = (tipoVal === 'VISITA_IE');
-          ajustarFuenteAdaptativa('pdf-titulo-1', 38, !esDosFilas);
-          ajustarFuenteAdaptativa('pdf-titulo-2', 38, !esDosFilas);
+        var loadingTask = null;
+        var pdf = null;
 
-          updateProgress(2, 3);
-          DOM.loadingText.textContent = 'Renderizando páginas...';
+        try {
+          loadingTask = pdfjsLib.getDocument({ data: buffer.slice(0) });
+          pdf = await loadingTask.promise;
+          var totalPages = pdf.numPages;
 
-          setTimeout(function () {
-            var paginas = Array.from(document.querySelectorAll('.pdf-pagina'));
-            var doc = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+          for (var i = 1; i <= totalPages; i++) {
+            updateProgress(i, totalPages);
 
-            function capturarPagina(index) {
-              if (index >= paginas.length) {
-                var nombreCortoLimpio = obtenerNombreShortFile(nombreInstitucion);
-                var nombreFinalArchivo = 'F-(' + fecha + ')-' + nombreCortoLimpio + '.pdf';
+            // Micro-pausa cada 5 páginas para liberar el event loop
+            if (i % 5 === 0) await new Promise(function (r) { return setTimeout(r, 1); });
 
-                updateProgress(3, 3);
-                DOM.loadingText.textContent = 'Guardando...';
+            var pageId = fileId + '_' + i;
 
-                try {
-                  doc.save(nombreFinalArchivo);
-                  showToast('PDF generado exitosamente: ' + nombreFinalArchivo, 'success');
-                } catch (e) {
-                  showToast('Error al guardar el PDF: ' + e.message, 'error');
-                }
+            try {
+              var page = await pdf.getPage(i);
+              var viewport = page.getViewport({ scale: 0.15 });
+              var canvas = document.createElement('canvas');
+              canvas.width = viewport.width;
+              canvas.height = viewport.height;
+              var ctx = canvas.getContext('2d');
+              await page.render({ canvasContext: ctx, viewport: viewport }).promise;
 
-                DOM.template.style.cssText = '';
-                DOM.btnGenerar.innerHTML = btnOriginalText;
-                DOM.btnGenerar.disabled = false;
-                isGenerating = false;
-                hideLoader();
-                return;
-              }
+              var thumb = canvas.toDataURL('image/jpeg', 0.5);
 
-              var paginaActual = index + 1;
-              DOM.loadingText.textContent = 'Renderizando página ' + paginaActual + ' de ' + paginas.length + '...';
+              // Liberar canvas
+              canvas.width = 0;
+              canvas.height = 0;
 
-              html2canvas(paginas[index], {
-                scale: 2,           
-                useCORS: true,      
-                allowTaint: true,   
-                logging: false,
-                width: 794,
-                height: 1123
-              }).then(function (canvas) {
-                var imgData = canvas.toDataURL('image/jpeg', 0.92);
-                if (index > 0) doc.addPage();
-                doc.addImage(imgData, 'JPEG', 0, 0, 210, 297);
+              var nodeData = {
+                id: pageId,
+                fileId: fileId,
+                pageIndex: i - 1,
+                rotation: 0,
+                thumb: thumb
+              };
 
-                canvas.width = 0;
-                canvas.height = 0;
+              pageRegistry.push(nodeData);
+              createCardInDOM(nodeData);
 
-                capturarPagina(index + 1);
-              }).catch(function (error) {
-                console.error('Error en html2canvas:', error);
-                showToast('Error al renderizar la página ' + paginaActual + '. Intenta de nuevo.', 'error');
-                DOM.template.style.cssText = '';
-                DOM.btnGenerar.innerHTML = btnOriginalText;
-                DOM.btnGenerar.disabled = false;
-                isGenerating = false;
-                hideLoader();
-              });
+            } catch (pageErr) {
+              console.warn('Error en página ' + i + ' de ' + file.name + ':', pageErr);
+              createFailedCard(fileId, i);
             }
+          }
+        } catch (docErr) {
+          console.error('Error al abrir PDF ' + file.name + ':', docErr);
+          showToast('No se pudo procesar: ' + file.name, 'error');
+        } finally {
+          // Liberar recursos de pdf.js
+          if (pdf && typeof pdf.destroy === 'function') {
+            try { pdf.destroy(); } catch (e) { /* silencioso */ }
+          }
+          if (loadingTask && typeof loadingTask.destroy === 'function') {
+            try { loadingTask.destroy(); } catch (e) { /* silencioso */ }
+          }
+        }
+      }
 
-            capturarPagina(0);
-          }, 250);
-        });
+      DOM.btnGenerate.disabled = pageRegistry.length === 0;
+      clearLoaderTimeout();
+      hideLoader();
+      DOM.fileInput.value = '';
+    }
 
-      }).catch(function (error) {
-        console.error('Error en compresión:', error);
-        showToast('Error al procesar las imágenes.', 'error');
-        DOM.btnGenerar.innerHTML = btnOriginalText;
-        DOM.btnGenerar.disabled = false;
-        isGenerating = false;
+    /* ═══════════════════════════════════════════════
+       GENERACIÓN DEL PDF UNIFICADO
+       ═══════════════════════════════════════════════ */
+
+    async function generatePDF() {
+      if (pageRegistry.length === 0) return;
+
+      showLoader('Compilando documento final...', true);
+      startLoaderTimeout();
+
+      var applyFoleo        = DOM.chkFoleo ? DOM.chkFoleo.checked : false;
+      var applyFoleoInverso = applyFoleo && DOM.chkFoleoInverso ? DOM.chkFoleoInverso.checked : false;
+      var optimize          = DOM.chkOptimize ? DOM.chkOptimize.checked : true;
+      var folioNum          = parseInt(DOM.folioStart.value, 10) || 1;
+      var totalPages        = pageRegistry.length;
+
+      // ── Cálculo de folio inicial para modo inverso ──
+      // En modo inverso, la última página recibe el número más bajo (folioNum)
+      // y la primera página recibe el número más alto (folioNum + totalPages - 1)
+      var folioActual;
+      if (applyFoleoInverso) {
+        // Empezamos desde el número más alto y decrementamos
+        folioActual = folioNum + totalPages - 1;
+      } else {
+        folioActual = folioNum;
+      }
+
+      try {
+        var finalPdf = await PDFLib.PDFDocument.create();
+        var loadedDocs = new Map();
+
+        // Cargar cada documento fuente una sola vez
+        for (var _i = 0, _keys = Array.from(pdfDocumentsData.keys()); _i < _keys.length; _i++) {
+          var fileId = _keys[_i];
+          var buffer = pdfDocumentsData.get(fileId);
+          loadedDocs.set(fileId, await PDFLib.PDFDocument.load(buffer, { ignoreEncryption: true }));
+        }
+
+        var font = await finalPdf.embedFont(PDFLib.StandardFonts.HelveticaBold);
+
+        for (var i = 0; i < totalPages; i++) {
+          updateProgress(i, totalPages);
+
+          // Chunking cada 10 páginas
+          if (i % 10 === 0) await new Promise(function (r) { return setTimeout(r, 1); });
+
+          var req = pageRegistry[i];
+          var srcDoc = loadedDocs.get(req.fileId);
+          if (!srcDoc) continue;
+
+          var copiedPages;
+          try {
+            copiedPages = await finalPdf.copyPages(srcDoc, [req.pageIndex]);
+          } catch (copyErr) {
+            console.warn('Error al copiar página ' + (i + 1) + ':', copyErr);
+            continue;
+          }
+
+          var copiedPage = copiedPages[0];
+
+          if (req.rotation !== 0) {
+            var currentRot = copiedPage.getRotation().angle;
+            copiedPage.setRotation(PDFLib.degrees(currentRot + req.rotation));
+          }
+
+          finalPdf.addPage(copiedPage);
+
+          // ── FOLEO (normal o inverso) ──
+          if (applyFoleo) {
+            var fStr = String(folioActual).padStart(3, '0');
+            var size = copiedPage.getSize();
+            var pageWidth = size.width;
+            var pageHeight = size.height;
+
+            // Rectángulo blanco de fondo
+            copiedPage.drawRectangle({
+              x: pageWidth - 40,
+              y: pageHeight - 25,
+              width: 30,
+              height: 16,
+              color: PDFLib.rgb(1, 1, 1)
+            });
+
+            // Número de folio
+            copiedPage.drawText(fStr, {
+              x: pageWidth - 36,
+              y: pageHeight - 21,
+              size: 11,
+              font: font,
+              color: PDFLib.rgb(0, 0, 0)
+            });
+
+            // Avanzar o retroceder según el modo
+            if (applyFoleoInverso) {
+              folioActual--;  // Decrementa: última página = número más bajo
+            } else {
+              folioActual++;  // Incrementa: primera página = número más bajo
+            }
+          }
+        }
+
+        var saveOptions = optimize ? { useObjectStreams: true } : {};
+        var finalBytes = await finalPdf.save(saveOptions);
+
+        var blob = new Blob([finalBytes], { type: 'application/pdf' });
+        var url = URL.createObjectURL(blob);
+        revokedUrls.add(url);
+
+        var link = document.createElement('a');
+        link.href = url;
+        link.download = 'SEDAPAL_Unificado_' + new Date().toISOString().split('T')[0] + '.pdf';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        // Revocar después de un tiempo prudencial
+        setTimeout(function () {
+          URL.revokeObjectURL(url);
+          revokedUrls.delete(url);
+        }, 3000);
+
+        showToast('PDF unificado generado exitosamente.', 'success');
+
+      } catch (e) {
+        console.error('Error en unificación:', e);
+        showToast('Error crítico durante la unificación: ' + e.message, 'error');
+      } finally {
+        clearLoaderTimeout();
         hideLoader();
-      });
+      }
     }
 
     /* ═══════════════════════════════════════════════
        EVENT LISTENERS
        ═══════════════════════════════════════════════ */
 
-    if (DOM.inputInstitucion) {
-      DOM.inputInstitucion.addEventListener('input', function () {
-        this.value = this.value.toUpperCase();
-        this.classList.remove('input-error');
-      });
-    }
-    if (DOM.inputDistrito) {
-      DOM.inputDistrito.addEventListener('input', function () {
-        this.value = this.value.toUpperCase();
-        this.classList.remove('input-error');
-      });
-    }
+    // ── Zona de carga ──
+    DOM.dropZone.addEventListener('click', function () { DOM.fileInput.click(); });
 
-    if (DOM.tipoEvento) {
-      DOM.tipoEvento.addEventListener('change', function () {
-        var tipo = this.value;
-        this.classList.remove('input-error');
-
-        if (!DOM.comboSub || !DOM.inputInstitucion) return;
-
-        DOM.comboSub.innerHTML = '<option value="" disabled selected>-- Tipo --</option>';
-        DOM.inputInstitucion.value = '';
-
-        if (tipo && subCategoriasPorEvento[tipo]) {
-          DOM.comboSub.disabled = false;
-          DOM.inputInstitucion.disabled = false;
-          DOM.inputInstitucion.placeholder = 'Escribe el nombre aquí...';
-
-          subCategoriasPorEvento[tipo].forEach(function (opcion) {
-            var opt = document.createElement('option');
-            opt.value = opcion;
-            opt.textContent = opcion;
-            DOM.comboSub.appendChild(opt);
-          });
-        } else {
-          DOM.comboSub.disabled = true;
-          DOM.inputInstitucion.disabled = true;
-          DOM.inputInstitucion.placeholder = 'Selecciona tipo de evento primero';
-        }
-      });
-    }
-
-    if (DOM.comboSub && DOM.inputInstitucion) {
-      DOM.comboSub.addEventListener('change', function () {
-        this.classList.remove('input-error');
-        DOM.inputInstitucion.focus();
-      });
-    }
-
-    if (DOM.inputFecha) {
-      DOM.inputFecha.addEventListener('change', function () {
-        this.classList.remove('input-error');
-      });
-    }
-
-    [1, 2, 3, 4].forEach(function (n) {
-      var input = document.getElementById('foto' + n);
-      var formPreview = document.getElementById('form-preview' + n);
-
-      if (!input) return;
-
-      input.addEventListener('change', function () {
-        var archivo = input.files[0];
-        if (!archivo) return;
-
-        if (!archivo.type.match(/^image\//)) {
-          showToast('La Foto ' + n + ' debe ser una imagen (JPG, PNG, etc.).', 'error');
-          input.value = '';
-          return;
-        }
-
-        if (archivo.size > MAX_FILE_SIZE) {
-          showToast('La Foto ' + n + ' excede los 15 MB. Usa una imagen más pequeña.', 'warning');
-          input.value = '';
-          return;
-        }
-
-        var reader = new FileReader();
-        reader.onload = function (e) {
-          imagenes[n] = e.target.result;
-          if (formPreview) {
-            formPreview.src = e.target.result;
-            formPreview.classList.add('visible');
-          }
-        };
-        reader.onerror = function () {
-          showToast('Error al leer la Foto ' + n + '. Intenta de nuevo.', 'error');
-        };
-        reader.readAsDataURL(archivo);
+    ['dragover', 'dragenter'].forEach(function (evName) {
+      DOM.dropZone.addEventListener(evName, function (ev) {
+        ev.preventDefault();
+        DOM.dropZone.classList.add('drag-over');
       });
     });
 
-    if (DOM.btnGenerar) {
-      DOM.btnGenerar.addEventListener('click', generarPDF);
+    ['dragleave', 'drop'].forEach(function (evName) {
+      DOM.dropZone.addEventListener(evName, function (ev) {
+        ev.preventDefault();
+        DOM.dropZone.classList.remove('drag-over');
+      });
+    });
+
+    DOM.dropZone.addEventListener('drop', function (ev) { processFiles(ev.dataTransfer.files); });
+    DOM.fileInput.addEventListener('change', function (ev) { processFiles(ev.target.files); });
+
+    // ── Mostrar/ocultar checkbox de foleo inverso ──
+    if (DOM.chkFoleo && DOM.lblFoleoInverso) {
+      DOM.chkFoleo.addEventListener('change', function () {
+        DOM.lblFoleoInverso.style.display = this.checked ? '' : 'none';
+        if (!this.checked && DOM.chkFoleoInverso) {
+          DOM.chkFoleoInverso.checked = false;
+        }
+      });
     }
 
-    function checkEnableButton() {
-      if (!DOM.btnGenerar || isGenerating) return;
-      var hasEvento  = DOM.tipoEvento && DOM.tipoEvento.value;
-      var hasSub     = DOM.comboSub && DOM.comboSub.value;
-      var hasInst    = DOM.inputInstitucion && DOM.inputInstitucion.value.trim();
-      var hasDist    = DOM.inputDistrito && DOM.inputDistrito.value.trim();
-      var hasFecha   = DOM.inputFecha && DOM.inputFecha.value;
-      var hasFotos   = imagenes[1] && imagenes[2] && imagenes[3] && imagenes[4];
-      DOM.btnGenerar.disabled = !(hasEvento && hasSub && hasInst && hasDist && hasFecha && hasFotos);
-    }
+    // ── Atajos de teclado ──
+    document.addEventListener('keydown', function (e) {
+      // No interceptar cuando el foco está en un input/select/textarea
+      var tag = document.activeElement ? document.activeElement.tagName : '';
+      var isEditable = tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' ||
+                       (document.activeElement && document.activeElement.isContentEditable);
 
-    var camposParaChequear = [DOM.tipoEvento, DOM.comboSub, DOM.inputInstitucion, DOM.inputDistrito, DOM.inputFecha];
-    camposParaChequear.forEach(function (campo) {
-      if (!campo) return;
-      campo.addEventListener('change', checkEnableButton);
-      if (campo.tagName === 'INPUT' && campo.type === 'text') {
-        campo.addEventListener('input', checkEnableButton);
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (isEditable) return;
+        var selected = document.querySelectorAll('.page-card.selected');
+        if (selected.length > 0) {
+          selected.forEach(function (card) { card.remove(); });
+          syncRegistryWithDOM();
+          e.preventDefault();
+        }
+      }
+
+      if (e.key === 'a' && (e.ctrlKey || e.metaKey)) {
+        if (isEditable) return;
+        e.preventDefault();
+        var allCards = document.querySelectorAll('.page-card:not(.page-failed)');
+        allCards.forEach(function (card) { card.classList.add('selected'); });
+      }
+
+      if (e.key === 'Escape') {
+        var allSelected = document.querySelectorAll('.page-card.selected');
+        allSelected.forEach(function (card) { card.classList.remove('selected'); });
       }
     });
 
-    var observer = new MutationObserver(checkEnableButton);
-    [1, 2, 3, 4].forEach(function (n) {
-      var preview = document.getElementById('form-preview' + n);
-      if (preview) {
-        observer.observe(preview, { attributes: true, attributeFilter: ['class', 'src'] });
+    // ── SortableJS (arrastre visual) ──
+    if (typeof Sortable !== 'undefined') {
+      try {
+        new Sortable(DOM.workspace, {
+          animation: 150,
+          ghostClass: 'sortable-ghost',
+          chosenClass: 'sortable-chosen',
+          delay: 100,
+          delayOnTouchOnly: true,
+          onEnd: function () { syncRegistryWithDOM(); }
+        });
+      } catch (sortErr) {
+        console.warn('SortableJS no pudo inicializarse. El orden manual por arrastre no estará disponible.', sortErr);
       }
-    });
+    }
 
-    checkEnableButton();
+    // ── Botón generar ──
+    DOM.btnGenerate.addEventListener('click', generatePDF);
 
-    document.querySelectorAll('input, select').forEach(function (el) {
-      el.addEventListener('focus', function () {
-        this.classList.remove('input-error');
+    // ── Limpieza de ObjectURLs al salir ──
+    window.addEventListener('beforeunload', function () {
+      revokedUrls.forEach(function (url) {
+        try { URL.revokeObjectURL(url); } catch (e) { /* silencioso */ }
       });
+      revokedUrls.clear();
     });
 
-    console.log('✅ Generador de PDF SEDAPAL — inicializado correctamente.');
+    console.log('✅ UNIFICADOR SEDAPAL — inicializado correctamente.');
   }
 
 })();
