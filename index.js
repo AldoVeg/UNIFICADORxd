@@ -1,585 +1,563 @@
-/* ============================================================
-   UNIFICADOR SEDAPAL — Lógica fortificada
-   ============================================================ */
+/* ═══════════════════════════════════════════════
+   index.js — Generador de PDF SEDAPAL (Fortificado)
+   IIFE estricto · Validación CDN · Compresión de
+   imágenes · Canvas offscreen · Foleo Inverso Opcional
+   ═══════════════════════════════════════════════ */
+
 (function () {
-    'use strict';
+  'use strict';
 
-    /* ---------- GUARDAS DE ENTORNO ---------- */
-    if (typeof PDFLib === 'undefined') {
-        showToast('Librería pdf-lib no disponible. La unificación no funcionará.', 'error');
+  /* ── Guard: DOM aún no listo ── */
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+
+  /* ═══════════════════════════════════════════════
+     INIT
+     ═══════════════════════════════════════════════ */
+  function init() {
+
+    /* ── Validación de CDNs ── */
+    if (typeof html2canvas === 'undefined') {
+      showToast('Librería html2canvas no disponible. Verifica tu conexión.', 'error');
+      return;
     }
-    if (typeof pdfjsLib === 'undefined') {
-        showToast('Motor PDF.js no disponible. No se generarán miniaturas.', 'error');
+    if (typeof window.jspdf === 'undefined' || typeof window.jspdf.jsPDF === 'undefined') {
+      showToast('Librería jsPDF no disponible. Verifica tu conexión.', 'error');
+      return;
     }
 
-    /* ---------- CONFIGURACIÓN DE PDF.JS ---------- */
-    if (typeof pdfjsLib !== 'undefined') {
-        pdfjsLib.GlobalWorkerOptions.workerSrc =
-            'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
-    }
-
-    /* ---------- REFERENCIAS AL DOM ---------- */
-    const $ = (sel) => document.querySelector(sel);
-    const $$ = (sel) => document.querySelectorAll(sel);
-
-    const workspace   = $('#workspace');
-    const btnGenerate = $('#btn-generate');
-    const overlay     = $('#loading-overlay');
-    const textStatus  = $('#loading-text');
-    const progressBar = $('#progress-bar');
-    const dropZone    = $('#drop-zone');
-    const fileInput   = $('#file-input');
-    const chkFoleo    = $('#chk-foleo');
-    const folioStart  = $('#folio-start');
-    const chkOptimize = $('#chk-optimize');
-
-    /* ---------- ESTADO ---------- */
-    const pdfDocumentsData = new Map();   // fileId → ArrayBuffer
-    let pageRegistry = [];                // [{ id, fileId, pageIndex, rotation, thumb }]
-    const revokedUrls = new Set();        // tracking de URL.createObjectURL
-
-    /* ---------- UTILIDADES ---------- */
-    const generateId = () => {
-        if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-            return crypto.randomUUID();
-        }
-        // Fallback determinista
-        return 'id_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 11);
+    /* ── Referencias DOM cacheadas ── */
+    var DOM = {
+      tipoEvento:       document.getElementById('tipoEvento'),
+      comboSub:         document.getElementById('subCategoria'),
+      inputInstitucion: document.getElementById('institucion'),
+      inputDistrito:    document.getElementById('distrito'),
+      inputFecha:       document.getElementById('fecha'),
+      chkFoleo:         document.getElementById('chkFoleo'), // Nuevo: Casillero opcional de foleo
+      btnGenerar:       document.getElementById('btnGenerar'),
+      overlay:          document.getElementById('loading-overlay'),
+      loadingText:      document.getElementById('loading-text'),
+      progressBar:      document.getElementById('progress-bar'),
+      template:         document.getElementById('pdf-template'),
+      offscreenCanvas:  document.getElementById('offscreen-canvas'),
+      cdnError:         document.getElementById('cdn-error')
     };
 
-    /** Muestra un toast de notificación */
-    function showToast(msg, type) {
-        const container = $('#toast-container');
-        if (!container) return;
-        const toast = document.createElement('div');
-        toast.className = 'toast' + (type ? ' ' + type : '');
-        toast.textContent = msg;
-        container.appendChild(toast);
-        // Auto-eliminar tras la animación
-        setTimeout(() => { if (toast.parentNode) toast.remove(); }, 4200);
+    /* ── Estado interno ── */
+    var imagenes = { 1: null, 2: null, 3: null, 4: null };
+    var imagenesComprimidas = { 1: null, 2: null, 3: null, 4: null };
+    var btnOriginalText = DOM.btnGenerar ? DOM.btnGenerar.innerHTML : 'Generar PDF';
+    var isGenerating = false;
+
+    /* ── Diccionario de subcategorías ── */
+    var subCategoriasPorEvento = {
+      "VISITA_IE":        ["INSTITUCIÓN EDUCATIVA", "COLEGIO"],
+      "VISITA_ADULTOS":   ["UNIVERSIDAD NACIONAL", "UNIVERSIDAD PRIVADA"],
+      "TALLER_IE":        ["UNIVERSIDAD NACIONAL", "UNIVERSIDAD PRIVADA", "INSTITUTO", "INSTITUCIÓN EDUCATIVA", "COLEGIO", "CEBA", "INICIAL", "NIDO"],
+      "TALLER_EMPRESAS":  ["SEDAPAL", "MUNICIPALIDAD", "UNIVERSIDAD NACIONAL", "UNIVERSIDAD PRIVADA", "CENTRO COMERCIAL"],
+      "TALLER_COMUNIDAD": ["MERCADO", "URBANIZACIÓN", "ASOCIACIÓN", "A.H."]
+    };
+
+    /* ── Tamaño máximo de imagen (bytes) ── */
+    var MAX_FILE_SIZE = 15 * 1024 * 1024; // 15 MB
+
+    /* ── Dimensiones de compresión ── */
+    var COMPRESS_WIDTH  = 1600;
+    var COMPRESS_HEIGHT = 1200;
+    var COMPRESS_QUALITY = 0.85;
+
+    /* ═══════════════════════════════════════════════
+       UTILIDADES
+       ═══════════════════════════════════════════════ */
+
+    // Formatea números a 3 dígitos (Ej: 1 -> "001", 10 -> "010")
+    function padFolio(numero) {
+      return ('000' + numero).slice(-3);
     }
 
-    /** Activa / desactiva el overlay de carga */
+    function showToast(msg, type) {
+      var container = document.getElementById('toast-container');
+      if (!container) return;
+      var toast = document.createElement('div');
+      toast.className = 'toast toast-' + (type || 'error');
+      toast.textContent = msg;
+      toast.addEventListener('click', function () {
+        toast.classList.add('toast-out');
+        setTimeout(function () { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 300);
+      });
+      container.appendChild(toast);
+      setTimeout(function () {
+        if (toast.parentNode) {
+          toast.classList.add('toast-out');
+          setTimeout(function () { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 300);
+        }
+      }, 5000);
+    }
+
     function showLoader(msg, withProgress) {
-        textStatus.textContent = msg;
-        overlay.classList.remove('hidden');
-        progressBar.classList.toggle('hidden', !withProgress);
-        if (withProgress) progressBar.value = 0;
+      if (!DOM.overlay) return;
+      DOM.loadingText.textContent = msg || 'Procesando...';
+      DOM.overlay.classList.remove('hidden');
+      if (withProgress) {
+        DOM.progressBar.classList.remove('hidden');
+        DOM.progressBar.value = 0;
+      } else {
+        DOM.progressBar.classList.add('hidden');
+      }
     }
 
     function updateProgress(current, total) {
-        if (total === 0) { progressBar.value = 0; return; }
-        progressBar.value = Math.min(100, Math.round((current / total) * 100));
+      if (!DOM.progressBar || DOM.progressBar.classList.contains('hidden')) return;
+      DOM.progressBar.value = Math.round((current / total) * 100);
     }
 
     function hideLoader() {
-        overlay.classList.add('hidden');
-        progressBar.classList.add('hidden');
+      if (!DOM.overlay) return;
+      DOM.overlay.classList.add('hidden');
+      DOM.progressBar.classList.add('hidden');
     }
 
-    /** Timeout de seguridad: si el loader lleva >90s visible, lo oculta */
-    let loaderTimeout = null;
-    function startLoaderTimeout() {
-        clearTimeout(loaderTimeout);
-        loaderTimeout = setTimeout(() => {
-            hideLoader();
-            showToast('La operación está tardando más de lo esperado. Intenta con menos páginas.', 'warn');
-        }, 90_000);
-    }
-    function clearLoaderTimeout() {
-        clearTimeout(loaderTimeout);
-        loaderTimeout = null;
+    function formatearFecha(valor) {
+      if (!valor) return '';
+      var partes = valor.split('-');
+      return partes[2] + '.' + partes[1] + '.' + partes[0];
     }
 
-    /** Revoca todas las URLs de objeto acumuladas */
-    function revokeAllUrls() {
-        revokedUrls.forEach(url => {
-            try { URL.revokeObjectURL(url); } catch (_) { /* noop */ }
-        });
-        revokedUrls.clear();
+    function obtenerTituloPDF(valor) {
+      if (valor === 'VISITA_IE') return 'VISITA DE INSTITUCIÓN<br>EDUCATIVA A LA PLANTA';
+      if (valor === 'VISITA_ADULTOS')   return 'VISITA DE ADULTOS A LA PLANTA';
+      if (valor === 'TALLER_IE')        return 'TALLER A INSTITUCIONES EDUCATIVAS';
+      if (valor === 'TALLER_EMPRESAS')  return 'TALLER A EMPRESAS';
+      if (valor === 'TALLER_COMUNIDAD') return 'TALLER A LA COMUNIDAD';
+      return '';
     }
 
-    /* ---------- VALIDACIÓN DE PDF ---------- */
-    /**
-     * Verifica los magic bytes %PDF en los primeros 5 bytes del buffer.
-     * Retorna true si es un PDF válido.
-     */
-    function isValidPDF(buffer) {
-        if (!buffer || buffer.byteLength < 5) return false;
-        const header = new Uint8Array(buffer.slice(0, 5));
-        const magic = String.fromCharCode.apply(null, header);
-        return magic.startsWith('%PDF');
+    function obtenerNombreShortFile(nombreIngresado) {
+      var texto = (nombreIngresado || '').toUpperCase().trim();
+      texto = texto.replace(/[^A-Z0-9\s\-_]/g, '');
+      texto = texto.replace(/\s+/g, '_').replace(/_+/g, '_').replace(/-+/g, '-');
+      return texto || 'documento';
     }
 
-    /* ---------- SINCRONIZACIÓN REGISTRO ↔ DOM ---------- */
-    function syncRegistryWithDOM() {
-        const newOrder = [];
-        Array.from(workspace.children).forEach(card => {
-            const record = pageRegistry.find(p => p.id === card.dataset.id);
-            if (record) newOrder.push(record);
-        });
-        pageRegistry = newOrder;
-        btnGenerate.disabled = pageRegistry.length === 0;
-        btnGenerate.setAttribute('aria-disabled', btnGenerate.disabled);
+    function ajustarFuenteAdaptativa(elementoId, tamanoMaximoBase, forzarUnaFila) {
+      var el = document.getElementById(elementoId);
+      if (!el) return;
+      if (forzarUnaFila) {
+        el.style.whiteSpace = 'nowrap';
+      } else {
+        el.style.whiteSpace = 'normal';
+      }
+      el.style.fontSize = tamanoMaximoBase + 'px';
+      var anchoContenedor = (el.parentElement && el.parentElement.clientWidth) || 682;
+      var anchoTexto = el.scrollWidth;
+      if (anchoTexto > anchoContenedor) {
+        var nuevoTamano = Math.floor((anchoContenedor / anchoTexto) * tamanoMaximoBase);
+        if (nuevoTamano < 14) nuevoTamano = 14;
+        el.style.fontSize = nuevoTamano + 'px';
+      }
+    }
 
-        // Si el workspace queda vacío, liberamos los buffers
-        if (pageRegistry.length === 0) {
-            pdfDocumentsData.clear();
+    /* ═══════════════════════════════════════════════
+       COMPRESIÓN DE IMAGEN (Canvas Offscreen)
+       ═══════════════════════════════════════════════ */
+    function comprimirImagen(dataURL, slot) {
+      return new Promise(function (resolve, reject) {
+        var img = new Image();
+        img.onload = function () {
+          var canvas = DOM.offscreenCanvas;
+          if (!canvas) { resolve(dataURL); return; }
+          var ctx = canvas.getContext('2d');
+
+          var w = img.width;
+          var h = img.height;
+          var ratio = Math.min(COMPRESS_WIDTH / w, COMPRESS_HEIGHT / h, 1);
+
+          canvas.width  = Math.round(w * ratio);
+          canvas.height = Math.round(h * ratio);
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+          var compressed = canvas.toDataURL('image/jpeg', COMPRESS_QUALITY);
+          imagenesComprimidas[slot] = compressed;
+
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          resolve(compressed);
+        };
+        img.onerror = function () {
+          imagenesComprimidas[slot] = dataURL;
+          resolve(dataURL);
+        };
+        img.src = dataURL;
+      });
+    }
+
+    /* ═══════════════════════════════════════════════
+       VALIDACIÓN DE CAMPOS
+       ═══════════════════════════════════════════════ */
+    function validarCampos() {
+      var errores = [];
+
+      if (!DOM.tipoEvento || !DOM.tipoEvento.value) {
+        errores.push('Selecciona un tipo de evento.');
+        if (DOM.tipoEvento) DOM.tipoEvento.classList.add('input-error');
+      } else {
+        if (DOM.tipoEvento) DOM.tipoEvento.classList.remove('input-error');
+      }
+
+      if (!DOM.comboSub || !DOM.comboSub.value) {
+        errores.push('Selecciona el tipo de institución.');
+        if (DOM.comboSub) DOM.comboSub.classList.add('input-error');
+      } else {
+        if (DOM.comboSub) DOM.comboSub.classList.remove('input-error');
+      }
+
+      if (!DOM.inputInstitucion || !DOM.inputInstitucion.value.trim()) {
+        errores.push('Ingresa el nombre de la institución.');
+        if (DOM.inputInstitucion) DOM.inputInstitucion.classList.add('input-error');
+      } else {
+        if (DOM.inputInstitucion) DOM.inputInstitucion.classList.remove('input-error');
+      }
+
+      if (!DOM.inputDistrito || !DOM.inputDistrito.value.trim()) {
+        errores.push('Ingresa el distrito.');
+        if (DOM.inputDistrito) DOM.inputDistrito.classList.add('input-error');
+      } else {
+        if (DOM.inputDistrito) DOM.inputDistrito.classList.remove('input-error');
+      }
+
+      if (!DOM.inputFecha || !DOM.inputFecha.value) {
+        errores.push('Selecciona la fecha.');
+        if (DOM.inputFecha) DOM.inputFecha.classList.add('input-error');
+      } else {
+        if (DOM.inputFecha) DOM.inputFecha.classList.remove('input-error');
+      }
+
+      for (var i = 1; i <= 4; i++) {
+        if (!imagenes[i]) {
+          errores.push('Selecciona la Foto ' + i + '.');
+          break;
         }
+      }
+
+      return errores;
     }
 
-    /* ---------- CREACIÓN DE TARJETA EN EL DOM ---------- */
-    function createCardInDOM(data) {
-        const card = document.createElement('div');
-        card.className = 'page-card';
-        card.dataset.id = data.id;
-        card.tabIndex = 0;
-        card.setAttribute('role', 'listitem');
-        card.setAttribute('aria-label', 'Página ' + (data.pageIndex + 1));
+    /* ═══════════════════════════════════════════════
+       GENERACIÓN DEL PDF
+       ═══════════════════════════════════════════════ */
+    function generarPDF() {
+      if (isGenerating) return;
 
-        // --- Selección múltiple con clic simple ---
-        card.addEventListener('click', (e) => {
-            if (e.target.classList.contains('btn-delete-page')) return;
-            card.classList.toggle('selected');
-        });
+      var errores = validarCampos();
+      if (errores.length > 0) {
+        showToast(errores[0], 'error');
+        return;
+      }
 
-        // --- Botón de eliminar ---
-        const btnDel = document.createElement('button');
-        btnDel.className = 'btn-delete-page';
-        btnDel.innerHTML = '✖';
-        btnDel.setAttribute('aria-label', 'Eliminar página');
-        btnDel.onclick = (e) => {
-            e.stopPropagation();
-            const selected = $$('.page-card.selected');
-            if (selected.length > 0 && card.classList.contains('selected')) {
-                selected.forEach(c => c.remove());
-            } else {
-                card.remove();
-            }
-            syncRegistryWithDOM();
-        };
-        card.appendChild(btnDel);
+      isGenerating = true;
 
-        // --- Imagen miniatura ---
-        const img = document.createElement('img');
-        img.className = 'page-image';
-        img.src = data.thumb;
-        img.dataset.rotation = '0';
-        img.alt = 'Miniatura de página ' + (data.pageIndex + 1);
-        img.loading = 'lazy';
-        card.appendChild(img);
+      var tipoVal          = DOM.tipoEvento.value;
+      var subCategoriaTexto = DOM.comboSub.value;
+      var nombreInstitucion = DOM.inputInstitucion.value.trim().toUpperCase();
+      var distrito          = DOM.inputDistrito.value.trim().toUpperCase();
+      var fecha             = formatearFecha(DOM.inputFecha.value);
 
-        // --- Rotación con doble clic ---
-        card.addEventListener('dblclick', (e) => {
-            e.stopPropagation();
-            const currentRot = (parseInt(img.dataset.rotation, 10) + 90) % 360;
-            img.dataset.rotation = currentRot;
-            img.style.transform = 'rotate(' + currentRot + 'deg)';
+      DOM.btnGenerar.innerHTML = '<span class="btn-icon">⏳</span> Generando PDF...';
+      DOM.btnGenerar.disabled = true;
 
-            const regIndex = pageRegistry.findIndex(p => p.id === data.id);
-            if (regIndex > -1) pageRegistry[regIndex].rotation = currentRot;
-        });
+      showLoader('Comprimiendo imágenes...', true);
 
-        workspace.appendChild(card);
-    }
+      var promesas = [];
+      for (var i = 1; i <= 4; i++) {
+        promesas.push(comprimirImagen(imagenes[i], i));
+      }
 
-    /**
-     * Crea una tarjeta placeholder para páginas que fallaron al renderizar.
-     */
-    function createFailedCard(fileId, pageNum) {
-        const pageId = fileId + '_failed_' + pageNum;
-        const card = document.createElement('div');
-        card.className = 'page-card page-failed';
-        card.dataset.id = pageId;
-        card.tabIndex = 0;
-        card.setAttribute('aria-label', 'Página ' + pageNum + ' — no se pudo renderizar');
+      Promise.all(promesas).then(function () {
+        updateProgress(1, 3);
+        DOM.loadingText.textContent = 'Preparando plantilla y logos...';
 
-        const btnDel = document.createElement('button');
-        btnDel.className = 'btn-delete-page';
-        btnDel.innerHTML = '✖';
-        btnDel.setAttribute('aria-label', 'Eliminar página fallida');
-        btnDel.onclick = (e) => {
-            e.stopPropagation();
-            card.remove();
-            syncRegistryWithDOM();
-        };
-        card.appendChild(btnDel);
+        var titulo = obtenerTituloPDF(tipoVal);
+        var subtituloFormateado = (subCategoriaTexto + ' ' + nombreInstitucion + ' – ' + distrito).toUpperCase();
 
-        const label = document.createElement('div');
-        label.className = 'page-failed-label';
-        label.innerHTML = '<span>⚠️</span><span>Pág. ' + pageNum + '</span><span>Error</span>';
-        card.appendChild(label);
+        // Rellenar plantilla estructural - Página 1
+        var titulo1 = document.getElementById('pdf-titulo-1');
+        var inst1 = document.getElementById('pdf-institucion-1');
+        var fecha1 = document.getElementById('pdf-fecha-1');
+        var foto1 = document.getElementById('pdf-foto-1');
+        var foto2 = document.getElementById('pdf-foto-2');
 
-        // También permite seleccionar tarjetas fallidas
-        card.addEventListener('click', (e) => {
-            if (e.target.classList.contains('btn-delete-page')) return;
-            card.classList.toggle('selected');
-        });
+        if (titulo1) titulo1.innerHTML = titulo;
+        if (inst1) inst1.textContent = subtituloFormateado;
+        if (fecha1) fecha1.textContent = fecha;
+        if (foto1) foto1.src = imagenesComprimidas[1];
+        if (foto2) foto2.src = imagenesComprimidas[2];
 
-        workspace.appendChild(card);
+        // Rellenar plantilla estructural - Página 2
+        var titulo2 = document.getElementById('pdf-titulo-2');
+        var inst2 = document.getElementById('pdf-institucion-2');
+        var fecha2 = document.getElementById('pdf-fecha-2');
+        var foto3 = document.getElementById('pdf-foto-3');
+        var foto4 = document.getElementById('pdf-foto-4');
 
-        // Registramos un placeholder en el registry para mantener coherencia
-        const nodeData = {
-            id: pageId,
-            fileId: fileId,
-            pageIndex: -1,        // marcador: página inválida
-            rotation: 0,
-            thumb: null
-        };
-        pageRegistry.push(nodeData);
-    }
+        if (titulo2) titulo2.innerHTML = titulo;
+        if (inst2) inst2.textContent = subtituloFormateado;
+        if (fecha2) fecha2.textContent = fecha;
+        if (foto3) foto3.src = imagenesComprimidas[3];
+        if (foto4) foto4.src = imagenesComprimidas[4];
 
-    /* ---------- PROCESAMIENTO DE ARCHIVOS ---------- */
-    async function processFiles(files) {
-        // Filtro fortificado: MIME type + extensión
-        const pdfs = Array.from(files).filter(f =>
-            f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
-        );
+        // ── LÓGICA DE FOLEO INVERSO OPCIONAL ──
+        var aplicarFoleo = DOM.chkFoleo ? DOM.chkFoleo.checked : false;
+        var paginasEnPlantilla = document.querySelectorAll('.pdf-pagina').length || 2; 
+        
+        var folioP1 = document.getElementById('pdf-folio-1');
+        var folioP2 = document.getElementById('pdf-folio-2');
 
-        if (pdfs.length === 0) {
-            showToast('Por favor, sube únicamente archivos en formato PDF.', 'warn');
-            return;
+        if (aplicarFoleo) {
+          // Página 1 recibe el número mayor (Ej: 002)
+          if (folioP1) folioP1.textContent = padFolio(paginasEnPlantilla);
+          // Página 2 recibe el número menor (Ej: 001)
+          if (folioP2) folioP2.textContent = padFolio(paginasEnPlantilla - 1);
+        } else {
+          // Limpiar si el usuario no activó la opción
+          if (folioP1) folioP1.textContent = '';
+          if (folioP2) folioP2.textContent = '';
         }
 
-        showLoader('Procesando páginas...', true);
-        startLoaderTimeout();
-        btnGenerate.disabled = true;
-        btnGenerate.setAttribute('aria-disabled', 'true');
+        // Ubicar la plantilla de forma segura
+        DOM.template.style.cssText = 'display:block; position:fixed; top:0; left:0; z-index:9999; opacity:0.01; pointer-events:none;';
 
-        let totalPagesProcessed = 0;
-        let totalPagesFailed = 0;
+        // Esperar descarga real del Logo PNG y Fotos
+        var todasLasImagenes = Array.from(DOM.template.querySelectorAll('img'));
+        var promesasCargaVisual = todasLasImagenes.map(function (img) {
+          if (img.complete) return Promise.resolve();
+          return new Promise(function (resolveReady) {
+            img.onload = resolveReady;
+            img.onerror = resolveReady; 
+          });
+        });
 
-        for (const file of pdfs) {
-            const fileId = generateId();
-            let buffer;
-            try {
-                buffer = await file.arrayBuffer();
-            } catch (err) {
-                console.error('Error al leer el archivo ' + file.name + ': ', err);
-                showToast('No se pudo leer: ' + file.name, 'error');
-                continue;
-            }
+        Promise.all(promesasCargaVisual).then(function () {
+          // Ajuste adaptativo
+          ajustarFuenteAdaptativa('pdf-institucion-1', 25, true);
+          ajustarFuenteAdaptativa('pdf-institucion-2', 25, true);
+          var esDosFilas = (tipoVal === 'VISITA_IE');
+          ajustarFuenteAdaptativa('pdf-titulo-1', 38, !esDosFilas);
+          ajustarFuenteAdaptativa('pdf-titulo-2', 38, !esDosFilas);
 
-            // Validación de magic bytes
-            if (!isValidPDF(buffer)) {
-                showToast('El archivo "' + file.name + '" no es un PDF válido. Se omitió.', 'warn');
-                continue;
-            }
+          updateProgress(2, 3);
+          DOM.loadingText.textContent = 'Renderizando páginas...';
 
-            pdfDocumentsData.set(fileId, buffer);
+          setTimeout(function () {
+            var paginas = Array.from(document.querySelectorAll('.pdf-pagina'));
+            var doc = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
 
-            // --- Renderizado con pdf.js ---
-            if (typeof pdfjsLib === 'undefined') {
-                showToast('PDF.js no disponible. No se generarán miniaturas para: ' + file.name, 'warn');
-                continue;
-            }
+            function capturarPagina(index) {
+              if (index >= paginas.length) {
+                var nombreCortoLimpio = obtenerNombreShortFile(nombreInstitucion);
+                var nombreFinalArchivo = 'F-(' + fecha + ')-' + nombreCortoLimpio + '.pdf';
 
-            let loadingTask = null;
-            let pdf = null;
-            try {
-                loadingTask = pdfjsLib.getDocument({ data: buffer.slice(0) });
-                pdf = await loadingTask.promise;
-            } catch (err) {
-                console.error('Error al abrir PDF ' + file.name + ': ', err);
-                showToast('No se pudo interpretar: ' + file.name + '. Puede estar corrupto.', 'error');
-                pdfDocumentsData.delete(fileId);
-                if (loadingTask) {
-                    try { loadingTask.destroy(); } catch (_) { /* noop */ }
-                }
-                continue;
-            }
-
-            const totalPages = pdf.numPages;
-
-            for (let i = 1; i <= totalPages; i++) {
-                updateProgress(totalPagesProcessed + i, totalPagesProcessed + totalPages);
-
-                // Micro-pausa cada 5 páginas para no congelar el hilo principal
-                if (i % 5 === 0) {
-                    await new Promise(r => setTimeout(r, 1));
-                }
-
-                const pageId = fileId + '_' + i;
+                updateProgress(3, 3);
+                DOM.loadingText.textContent = 'Guardando...';
 
                 try {
-                    const page = await pdf.getPage(i);
-                    const viewport = page.getViewport({ scale: 0.15 });
-
-                    const canvas = document.createElement('canvas');
-                    canvas.width = viewport.width;
-                    canvas.height = viewport.height;
-                    const ctx = canvas.getContext('2d');
-
-                    await page.render({ canvasContext: ctx, viewport }).promise;
-
-                    const thumb = canvas.toDataURL('image/jpeg', 0.5);
-
-                    // Liberar canvas
-                    canvas.width = 0;
-                    canvas.height = 0;
-
-                    const nodeData = {
-                        id: pageId,
-                        fileId: fileId,
-                        pageIndex: i - 1,
-                        rotation: 0,
-                        thumb: thumb
-                    };
-
-                    pageRegistry.push(nodeData);
-                    createCardInDOM(nodeData);
-                    totalPagesProcessed++;
-
-                } catch (pageErr) {
-                    // Página individual fallida — no detiene el resto
-                    console.warn('Error al renderizar página ' + i + ' de ' + file.name + ': ', pageErr);
-                    createFailedCard(fileId, i);
-                    totalPagesFailed++;
+                  doc.save(nombreFinalArchivo);
+                  showToast('PDF generado exitosamente: ' + nombreFinalArchivo, 'success');
+                } catch (e) {
+                  showToast('Error al guardar el PDF: ' + e.message, 'error');
                 }
+
+                DOM.template.style.cssText = '';
+                DOM.btnGenerar.innerHTML = btnOriginalText;
+                DOM.btnGenerar.disabled = false;
+                isGenerating = false;
+                hideLoader();
+                return;
+              }
+
+              var paginaActual = index + 1;
+              DOM.loadingText.textContent = 'Renderizando página ' + paginaActual + ' de ' + paginas.length + '...';
+
+              html2canvas(paginas[index], {
+                scale: 2,           
+                useCORS: true,      
+                allowTaint: true,   
+                logging: false,
+                width: 794,
+                height: 1123
+              }).then(function (canvas) {
+                var imgData = canvas.toDataURL('image/jpeg', 0.92);
+                if (index > 0) doc.addPage();
+                doc.addImage(imgData, 'JPEG', 0, 0, 210, 297);
+
+                canvas.width = 0;
+                canvas.height = 0;
+
+                capturarPagina(index + 1);
+              }).catch(function (error) {
+                console.error('Error en html2canvas:', error);
+                showToast('Error al renderizar la página ' + paginaActual + '. Intenta de nuevo.', 'error');
+                DOM.template.style.cssText = '';
+                DOM.btnGenerar.innerHTML = btnOriginalText;
+                DOM.btnGenerar.disabled = false;
+                isGenerating = false;
+                hideLoader();
+              });
             }
 
-            // Liberar recursos de pdf.js
-            try { pdf.destroy(); } catch (_) { /* noop */ }
-            try { loadingTask.destroy(); } catch (_) { /* noop */ }
-        }
+            capturarPagina(0);
+          }, 250);
+        });
 
-        // Resumen final
-        if (totalPagesFailed > 0) {
-            showToast(
-                totalPagesProcessed + ' páginas listas. ' + totalPagesFailed + ' páginas fallaron (marcadas en rojo).',
-                'warn'
-            );
-        } else if (totalPagesProcessed > 0) {
-            showToast(totalPagesProcessed + ' páginas procesadas correctamente.', '');
-        }
-
-        btnGenerate.disabled = pageRegistry.length === 0;
-        btnGenerate.setAttribute('aria-disabled', btnGenerate.disabled);
-        clearLoaderTimeout();
+      }).catch(function (error) {
+        console.error('Error en compresión:', error);
+        showToast('Error al procesar las imágenes.', 'error');
+        DOM.btnGenerar.innerHTML = btnOriginalText;
+        DOM.btnGenerar.disabled = false;
+        isGenerating = false;
         hideLoader();
-
-        // Limpiar input para permitir re-subir el mismo archivo
-        fileInput.value = '';
+      });
     }
 
-    /* ---------- UNIFICACIÓN FINAL ---------- */
-    async function unifyAndDownload() {
-        if (pageRegistry.length === 0) return;
+    /* ═══════════════════════════════════════════════
+       EVENT LISTENERS
+       ═══════════════════════════════════════════════ */
 
-        // Filtrar páginas fallidas (pageIndex === -1)
-        const validPages = pageRegistry.filter(p => p.pageIndex >= 0);
-        if (validPages.length === 0) {
-            showToast('No hay páginas válidas para unificar.', 'error');
-            return;
-        }
-
-        showLoader('Compilando documento final...', true);
-        startLoaderTimeout();
-
-        const applyFoleo = chkFoleo.checked;
-        const optimize   = chkOptimize.checked;
-        let folioNum     = parseInt(folioStart.value, 10) || 1;
-
-        try {
-            const finalPdf = await PDFLib.PDFDocument.create();
-            const loadedDocs = new Map();
-
-            // Cargar cada documento fuente una sola vez
-            for (const [fileId, buffer] of pdfDocumentsData.entries()) {
-                try {
-                    const doc = await PDFLib.PDFDocument.load(buffer, { ignoreEncryption: true });
-                    loadedDocs.set(fileId, doc);
-                } catch (err) {
-                    console.error('Error al cargar documento para unificación: ', err);
-                    showToast('Error al cargar un documento fuente. Se omitirán sus páginas.', 'error');
-                }
-            }
-
-            const font = await finalPdf.embedFont(PDFLib.StandardFonts.HelveticaBold);
-
-            for (let i = 0; i < validPages.length; i++) {
-                updateProgress(i, validPages.length);
-
-                // Chunking cada 10 páginas
-                if (i % 10 === 0) {
-                    await new Promise(r => setTimeout(r, 1));
-                }
-
-                const req = validPages[i];
-                const srcDoc = loadedDocs.get(req.fileId);
-                if (!srcDoc) continue; // documento no cargado
-
-                const [copiedPage] = await finalPdf.copyPages(srcDoc, [req.pageIndex]);
-
-                // Aplicar rotación si existe
-                if (req.rotation !== 0) {
-                    const currentRot = copiedPage.getRotation().angle;
-                    copiedPage.setRotation(PDFLib.degrees(currentRot + req.rotation));
-                }
-
-                finalPdf.addPage(copiedPage);
-
-                // Foleo
-                if (applyFoleo) {
-                    const fStr = folioNum.toString().padStart(3, '0');
-                    const { width, height } = copiedPage.getSize();
-
-                    copiedPage.drawRectangle({
-                        x: width - 40,
-                        y: height - 25,
-                        width: 30,
-                        height: 16,
-                        color: PDFLib.rgb(1, 1, 1)
-                    });
-
-                    copiedPage.drawText(fStr, {
-                        x: width - 36,
-                        y: height - 21,
-                        size: 11,
-                        font: font,
-                        color: PDFLib.rgb(0, 0, 0)
-                    });
-                    folioNum++;
-                }
-            }
-
-            const saveOptions = optimize ? { useObjectStreams: true } : {};
-            const finalBytes = await finalPdf.save(saveOptions);
-
-            // Descarga
-            const blob = new Blob([finalBytes], { type: 'application/pdf' });
-            const url = URL.createObjectURL(blob);
-            revokedUrls.add(url);
-
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = 'SEDAPAL_Unificado_' + new Date().toISOString().split('T')[0] + '.pdf';
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-
-            // Revocar tras un breve delay para asegurar la descarga
-            setTimeout(() => {
-                URL.revokeObjectURL(url);
-                revokedUrls.delete(url);
-            }, 3000);
-
-            showToast('PDF unificado descargado exitosamente.', '');
-
-        } catch (e) {
-            console.error('Error crítico durante la unificación: ', e);
-            showToast('Error durante la unificación: ' + e.message, 'error');
-        } finally {
-            clearLoaderTimeout();
-            hideLoader();
-        }
+    if (DOM.inputInstitucion) {
+      DOM.inputInstitucion.addEventListener('input', function () {
+        this.value = this.value.toUpperCase();
+        this.classList.remove('input-error');
+      });
+    }
+    if (DOM.inputDistrito) {
+      DOM.inputDistrito.addEventListener('input', function () {
+        this.value = this.value.toUpperCase();
+        this.classList.remove('input-error');
+      });
     }
 
-    /* ---------- INICIALIZACIÓN DE SORTABLE ---------- */
-    function initSortable() {
-        if (typeof Sortable === 'undefined') {
-            console.warn('SortableJS no disponible. El reordenamiento por arrastre no funcionará.');
-            return;
+    if (DOM.tipoEvento) {
+      DOM.tipoEvento.addEventListener('change', function () {
+        var tipo = this.value;
+        this.classList.remove('input-error');
+
+        if (!DOM.comboSub || !DOM.inputInstitucion) return;
+
+        DOM.comboSub.innerHTML = '<option value="" disabled selected>-- Tipo --</option>';
+        DOM.inputInstitucion.value = '';
+
+        if (tipo && subCategoriasPorEvento[tipo]) {
+          DOM.comboSub.disabled = false;
+          DOM.inputInstitucion.disabled = false;
+          DOM.inputInstitucion.placeholder = 'Escribe el nombre aquí...';
+
+          subCategoriasPorEvento[tipo].forEach(function (opcion) {
+            var opt = document.createElement('option');
+            opt.value = opcion;
+            opt.textContent = opcion;
+            DOM.comboSub.appendChild(opt);
+          });
+        } else {
+          DOM.comboSub.disabled = true;
+          DOM.inputInstitucion.disabled = true;
+          DOM.inputInstitucion.placeholder = 'Selecciona tipo de evento primero';
         }
-        try {
-            new Sortable(workspace, {
-                animation: 150,
-                ghostClass: 'sortable-ghost',
-                chosenClass: 'sortable-chosen',
-                delay: 100,
-                delayOnTouchOnly: true,
-                onEnd: () => syncRegistryWithDOM()
-            });
-        } catch (err) {
-            console.warn('No se pudo inicializar Sortable: ', err);
-        }
+      });
     }
 
-    /* ---------- EVENTOS ---------- */
-
-    // Drop zone
-    dropZone.addEventListener('click', () => fileInput.click());
-
-    ['dragover', 'dragenter'].forEach(evName => {
-        dropZone.addEventListener(evName, (ev) => {
-            ev.preventDefault();
-            dropZone.classList.add('drag-over');
-        });
-    });
-
-    ['dragleave', 'drop'].forEach(evName => {
-        dropZone.addEventListener(evName, (ev) => {
-            ev.preventDefault();
-            dropZone.classList.remove('drag-over');
-        });
-    });
-
-    dropZone.addEventListener('drop', (ev) => {
-        if (ev.dataTransfer.files.length > 0) {
-            processFiles(ev.dataTransfer.files);
-        }
-    });
-
-    fileInput.addEventListener('change', (ev) => {
-        if (ev.target.files.length > 0) {
-            processFiles(ev.target.files);
-        }
-    });
-
-    // Botón de unificar
-    btnGenerate.addEventListener('click', unifyAndDownload);
-
-    // --- Atajos de teclado ---
-    document.addEventListener('keydown', (e) => {
-        // No interceptar si el foco está en un input/textarea/select
-        const tag = document.activeElement ? document.activeElement.tagName.toLowerCase() : '';
-        const isEditable = tag === 'input' || tag === 'textarea' || tag === 'select' ||
-                           (document.activeElement && document.activeElement.isContentEditable);
-
-        // Suprimir / Backspace → borrar seleccionadas (solo si no estamos en un campo editable)
-        if ((e.key === 'Delete' || e.key === 'Backspace') && !isEditable) {
-            const selected = $$('.page-card.selected');
-            if (selected.length > 0) {
-                e.preventDefault();
-                selected.forEach(card => card.remove());
-                syncRegistryWithDOM();
-            }
-        }
-
-        // Ctrl+A / Cmd+A → seleccionar todas las tarjetas
-        if ((e.ctrlKey || e.metaKey) && e.key === 'a' && !isEditable) {
-            e.preventDefault();
-            $$('.page-card').forEach(card => card.classList.add('selected'));
-        }
-
-        // Escape → deseleccionar todas
-        if (e.key === 'Escape' && !isEditable) {
-            $$('.page-card.selected').forEach(card => card.classList.remove('selected'));
-        }
-    });
-
-    // --- Limpieza al cerrar la página ---
-    window.addEventListener('beforeunload', () => {
-        revokeAllUrls();
-    });
-
-    // --- Footer: año dinámico ---
-    const yearSpan = $('#current-year');
-    if (yearSpan) {
-        yearSpan.textContent = new Date().getFullYear();
+    if (DOM.comboSub && DOM.inputInstitucion) {
+      DOM.comboSub.addEventListener('change', function () {
+        this.classList.remove('input-error');
+        DOM.inputInstitucion.focus();
+      });
     }
 
-    /* ---------- ARRANQUE ---------- */
-    function boot() {
-        initSortable();
-        btnGenerate.disabled = true;
-        btnGenerate.setAttribute('aria-disabled', 'true');
+    if (DOM.inputFecha) {
+      DOM.inputFecha.addEventListener('change', function () {
+        this.classList.remove('input-error');
+      });
     }
 
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', boot);
-    } else {
-        boot();
+    [1, 2, 3, 4].forEach(function (n) {
+      var input = document.getElementById('foto' + n);
+      var formPreview = document.getElementById('form-preview' + n);
+
+      if (!input) return;
+
+      input.addEventListener('change', function () {
+        var archivo = input.files[0];
+        if (!archivo) return;
+
+        if (!archivo.type.match(/^image\//)) {
+          showToast('La Foto ' + n + ' debe ser una imagen (JPG, PNG, etc.).', 'error');
+          input.value = '';
+          return;
+        }
+
+        if (archivo.size > MAX_FILE_SIZE) {
+          showToast('La Foto ' + n + ' excede los 15 MB. Usa una imagen más pequeña.', 'warning');
+          input.value = '';
+          return;
+        }
+
+        var reader = new FileReader();
+        reader.onload = function (e) {
+          imagenes[n] = e.target.result;
+          if (formPreview) {
+            formPreview.src = e.target.result;
+            formPreview.classList.add('visible');
+          }
+        };
+        reader.onerror = function () {
+          showToast('Error al leer la Foto ' + n + '. Intenta de nuevo.', 'error');
+        };
+        reader.readAsDataURL(archivo);
+      });
+    });
+
+    if (DOM.btnGenerar) {
+      DOM.btnGenerar.addEventListener('click', generarPDF);
     }
+
+    function checkEnableButton() {
+      if (!DOM.btnGenerar || isGenerating) return;
+      var hasEvento  = DOM.tipoEvento && DOM.tipoEvento.value;
+      var hasSub     = DOM.comboSub && DOM.comboSub.value;
+      var hasInst    = DOM.inputInstitucion && DOM.inputInstitucion.value.trim();
+      var hasDist    = DOM.inputDistrito && DOM.inputDistrito.value.trim();
+      var hasFecha   = DOM.inputFecha && DOM.inputFecha.value;
+      var hasFotos   = imagenes[1] && imagenes[2] && imagenes[3] && imagenes[4];
+      DOM.btnGenerar.disabled = !(hasEvento && hasSub && hasInst && hasDist && hasFecha && hasFotos);
+    }
+
+    var camposParaChequear = [DOM.tipoEvento, DOM.comboSub, DOM.inputInstitucion, DOM.inputDistrito, DOM.inputFecha];
+    camposParaChequear.forEach(function (campo) {
+      if (!campo) return;
+      campo.addEventListener('change', checkEnableButton);
+      if (campo.tagName === 'INPUT' && campo.type === 'text') {
+        campo.addEventListener('input', checkEnableButton);
+      }
+    });
+
+    var observer = new MutationObserver(checkEnableButton);
+    [1, 2, 3, 4].forEach(function (n) {
+      var preview = document.getElementById('form-preview' + n);
+      if (preview) {
+        observer.observe(preview, { attributes: true, attributeFilter: ['class', 'src'] });
+      }
+    });
+
+    checkEnableButton();
+
+    document.querySelectorAll('input, select').forEach(function (el) {
+      el.addEventListener('focus', function () {
+        this.classList.remove('input-error');
+      });
+    });
+
+    console.log('✅ Generador de PDF SEDAPAL — inicializado correctamente.');
+  }
 
 })();
