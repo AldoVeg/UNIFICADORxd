@@ -5,66 +5,66 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta http-equiv="X-Content-Type-Options" content="nosniff" />
     <title>UNIFICADOR SEDAPAL</title>
+    <link rel="stylesheet" href="index.css" />
 
-    <!-- CDN: pdf-lib (motor de compilación) -->
+    <!-- CDN: pdf-lib (motor PDF) -->
     <script defer src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"
-            onerror="document.getElementById('cdn-error').classList.remove('hidden')"></script>
+            onerror="document.getElementById('cdn-error').classList.remove('hidden');document.getElementById('cdn-error').textContent='⚠️ pdf-lib no disponible. Revisa tu conexión.'"></script>
 
-    <!-- CDN: pdf.js (motor de renderizado de miniaturas) -->
+    <!-- CDN: pdf.js (visualizador de miniaturas) -->
     <script defer src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"
-            onerror="document.getElementById('cdn-error').classList.remove('hidden')"></script>
+            onerror="document.getElementById('cdn-error').classList.remove('hidden');document.getElementById('cdn-error').textContent='⚠️ pdf.js no disponible. Revisa tu conexión.'"></script>
 
     <!-- CDN: SortableJS (arrastre visual) -->
     <script defer src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"
-            onerror="console.warn('SortableJS no disponible — el arrastre visual estará limitado.')"></script>
+            onerror="console.warn('SortableJS no disponible — solo drag nativo.')"></script>
 
-    <script defer src="index.js"></script>
-    <link rel="stylesheet" href="index.css" />
+    <!-- CDN: mammoth.js (conversión Word → HTML) -->
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"
+            onerror="console.warn('mammoth.js no disponible — sin soporte Word.')"></script>
+
+    <!-- CDN: html2canvas (captura de páginas Word → imagen) -->
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"
+            onerror="console.warn('html2canvas no disponible — Word sin thumbnail.')"></script>
 </head>
 <body>
 
-    <!-- Banner de error de CDN (oculto por defecto) -->
-    <div id="cdn-error" class="cdn-error-banner hidden" role="alert">
-        ⚠️ Error de red: No se pudieron cargar las librerías externas. Verifica tu conexión a internet y recarga la página.
-    </div>
-
-    <div class="portal-container">
+    <div class="portal-container" role="main" aria-label="Unificador SEDAPAL">
         <header>
             <h1>UNIFICADOR SEDAPAL</h1>
-            <p class="header-subtitle">Arrastra, ordena y unifica tus archivos PDF</p>
+            <p class="subtitle">Arrastra PDFs y DOCX, organízalos y genera un PDF unificado</p>
         </header>
 
         <main>
+            <!-- Banner error CDN -->
+            <div id="cdn-error" class="cdn-error-banner hidden" role="alert"></div>
+
             <!-- Zona de carga -->
-            <div id="drop-zone"
-                 class="drop-zone"
-                 role="button"
-                 tabindex="0"
-                 aria-label="Zona de carga de archivos PDF. Haz clic o arrastra aquí tus documentos.">
-                <svg class="drop-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#00529b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                    <polyline points="17 8 12 3 7 8"/>
-                    <line x1="12" y1="3" x2="12" y2="15"/>
+            <div id="drop-zone" class="drop-zone" tabindex="0" role="button"
+                 aria-label="Zona de carga de archivos. Haz clic o arrastra PDFs y DOCX aquí.">
+                <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#00529b" stroke-width="1.5" aria-hidden="true">
+                    <path d="M12 16V4m0 0L8 8m4-4l4 4M4 20h16"/>
                 </svg>
-                <span>Haz clic o arrastra aquí tus PDFs</span>
+                <span>Haz clic o arrastra aquí tus <strong>PDFs</strong> y <strong>DOCX</strong></span>
             </div>
-            <input type="file" id="file-input" multiple accept=".pdf,application/pdf" style="display:none;" />
+            <input type="file" id="file-input" multiple accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" style="display:none;" />
 
             <!-- Panel de controles -->
-            <fieldset class="controls-panel" aria-label="Opciones de procesamiento">
-                <legend class="sr-only">Opciones de unificación</legend>
+            <fieldset class="controls-panel">
+                <legend class="sr-only">Opciones de salida</legend>
 
                 <label class="control-item">
                     <input type="checkbox" id="chk-foleo" /> Foleo
                 </label>
 
-                <label class="control-item" id="lbl-foleo-inverso" style="display:none;">
+                <label class="control-item" id="row-foleo-inverso" style="display:none;">
                     <input type="checkbox" id="chk-foleo-inverso" /> Foleo Inverso
+                    <span class="control-hint" title="La última página recibe el número más bajo">ⓘ</span>
                 </label>
 
                 <label class="control-item">
                     Iniciar en:
-                    <input type="number" id="folio-start" value="1" min="1" />
+                    <input type="number" id="folio-start" value="1" min="1" max="999" aria-label="Número de inicio del foleo" />
                 </label>
 
                 <label class="control-item">
@@ -72,41 +72,41 @@
                 </label>
             </fieldset>
 
-            <!-- Workspace: aquí se renderizan las miniaturas -->
-            <div id="workspace"
-                 class="workspace"
-                 aria-label="Área de trabajo. Las páginas se muestran como miniaturas ordenables."
-                 aria-live="polite">
-            </div>
+            <!-- Workspace (tarjetas de páginas) -->
+            <div id="workspace" class="workspace" aria-label="Área de trabajo. Organiza las páginas arrastrándolas."
+                 aria-live="polite" role="list"></div>
 
-            <!-- Botón de acción principal -->
-            <button id="btn-generate"
-                    class="btn-primary"
-                    disabled
-                    aria-label="Unificar y descargar el documento PDF compilado">
-                <svg class="btn-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                    <polyline points="7 10 12 15 17 10"/>
-                    <line x1="12" y1="15" x2="12" y2="3"/>
+            <!-- Botón generar -->
+            <button id="btn-generate" class="btn-primary" disabled aria-label="Unificar y descargar PDF">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
                 </svg>
                 Unificar y Descargar
             </button>
         </main>
 
         <footer>
-            <p>Unificador SEDAPAL &copy; <span id="current-year"></span> — Herramienta de compilación documental</p>
+            <small>SEDAPAL &copy; <span id="current-year"></span> — Unificador de documentos</small>
         </footer>
     </div>
 
     <!-- Overlay de carga -->
-    <div id="loading-overlay" class="overlay hidden" role="alertdialog" aria-live="assertive">
-        <div class="loader"></div>
+    <div id="loading-overlay" class="overlay hidden" role="alert" aria-live="assertive">
+        <div class="loader" aria-hidden="true"></div>
         <div id="loading-text">Procesando...</div>
-        <progress id="progress-bar" value="0" max="100" class="hidden"></progress>
+        <progress id="progress-bar" value="0" max="100" class="hidden" aria-label="Progreso de la operación"></progress>
     </div>
 
-    <!-- Contenedor de notificaciones toast -->
+    <!-- Canvas offscreen (para compresión y renderizado Word) -->
+    <canvas id="offscreen-canvas" width="1600" height="1200" style="display:none;" aria-hidden="true"></canvas>
+
+    <!-- Contenedor de toasts -->
     <div id="toast-container" class="toast-container" aria-live="polite"></div>
 
+    <script defer src="index.js"></script>
+    <script>
+        // Año dinámico en footer
+        document.getElementById('current-year').textContent = new Date().getFullYear();
+    </script>
 </body>
 </html>
