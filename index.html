@@ -1,40 +1,37 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="X-Content-Type-Options" content="nosniff">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="X-Content-Type-Options" content="nosniff" />
     <title>UNIFICADOR SEDAPAL</title>
 
-    <!-- CDN: pdf-lib (compilación final) -->
+    <!-- CDN: pdf-lib (motor de compilación) -->
     <script defer src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"
             onerror="document.getElementById('cdn-error').classList.remove('hidden')"></script>
 
-    <!-- CDN: pdf.js (renderizado de miniaturas) -->
+    <!-- CDN: pdf.js (motor de renderizado de miniaturas) -->
     <script defer src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"
             onerror="document.getElementById('cdn-error').classList.remove('hidden')"></script>
 
-    <!-- CDN: SortableJS (arrastre) -->
+    <!-- CDN: SortableJS (arrastre visual) -->
     <script defer src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"
-            onerror="console.warn('SortableJS no disponible — el arrastre funcionará con respaldo nativo.')"></script>
+            onerror="console.warn('SortableJS no disponible — el arrastre visual estará limitado.')"></script>
 
-    <!-- Estilos locales -->
-    <link rel="stylesheet" href="index.css">
+    <script defer src="index.js"></script>
+    <link rel="stylesheet" href="index.css" />
 </head>
 <body>
 
-    <!-- Banner de error si fallan los CDN -->
+    <!-- Banner de error de CDN (oculto por defecto) -->
     <div id="cdn-error" class="cdn-error-banner hidden" role="alert">
-        ⚠️ No se pudieron cargar las librerías externas. Verifica tu conexión a internet y recarga la página.
+        ⚠️ Error de red: No se pudieron cargar las librerías externas. Verifica tu conexión a internet y recarga la página.
     </div>
-
-    <!-- Toast para notificaciones -->
-    <div id="toast-container" aria-live="polite"></div>
 
     <div class="portal-container">
         <header>
             <h1>UNIFICADOR SEDAPAL</h1>
-            <p class="subtitle">Arrastra, ordena, rota y unifica tus PDFs</p>
+            <p class="header-subtitle">Arrastra, ordena y unifica tus archivos PDF</p>
         </header>
 
         <main>
@@ -43,48 +40,51 @@
                  class="drop-zone"
                  role="button"
                  tabindex="0"
-                 aria-label="Zona de carga de archivos PDF. Haz clic o arrastra aquí.">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#00529b" stroke-width="1.5" aria-hidden="true">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                    <polyline points="14 2 14 8 20 8"/>
-                    <line x1="12" y1="18" x2="12" y2="12"/>
-                    <line x1="9" y1="15" x2="12" y2="12"/>
-                    <line x1="15" y1="15" x2="12" y2="12"/>
+                 aria-label="Zona de carga de archivos PDF. Haz clic o arrastra aquí tus documentos.">
+                <svg class="drop-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#00529b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/>
+                    <line x1="12" y1="3" x2="12" y2="15"/>
                 </svg>
                 <span>Haz clic o arrastra aquí tus PDFs</span>
             </div>
-            <input type="file" id="file-input" multiple accept=".pdf,application/pdf" aria-hidden="true">
+            <input type="file" id="file-input" multiple accept=".pdf,application/pdf" style="display:none;" />
 
             <!-- Panel de controles -->
-            <fieldset class="controls-panel">
-                <legend>Opciones de salida</legend>
+            <fieldset class="controls-panel" aria-label="Opciones de procesamiento">
+                <legend class="sr-only">Opciones de unificación</legend>
 
                 <label class="control-item">
-                    <input type="checkbox" id="chk-foleo">
-                    <span>Foleo automático</span>
+                    <input type="checkbox" id="chk-foleo" /> Foleo
+                </label>
+
+                <label class="control-item" id="lbl-foleo-inverso" style="display:none;">
+                    <input type="checkbox" id="chk-foleo-inverso" /> Foleo Inverso
                 </label>
 
                 <label class="control-item">
-                    <span>Iniciar en:</span>
-                    <input type="number" id="folio-start" value="1" min="1" max="9999" aria-label="Número de folio inicial">
+                    Iniciar en:
+                    <input type="number" id="folio-start" value="1" min="1" />
                 </label>
 
                 <label class="control-item">
-                    <input type="checkbox" id="chk-optimize" checked>
-                    <span>Optimizar peso</span>
+                    <input type="checkbox" id="chk-optimize" checked /> Optimizar Peso
                 </label>
             </fieldset>
 
             <!-- Workspace: aquí se renderizan las miniaturas -->
             <div id="workspace"
                  class="workspace"
-                 aria-label="Área de trabajo. Las páginas aparecen aquí como miniaturas ordenables."
-                 data-empty="No hay páginas. Arrastra uno o más PDFs para comenzar.">
+                 aria-label="Área de trabajo. Las páginas se muestran como miniaturas ordenables."
+                 aria-live="polite">
             </div>
 
-            <!-- Botón de unificación -->
-            <button id="btn-generate" class="btn-primary" disabled aria-disabled="true">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <!-- Botón de acción principal -->
+            <button id="btn-generate"
+                    class="btn-primary"
+                    disabled
+                    aria-label="Unificar y descargar el documento PDF compilado">
+                <svg class="btn-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
                     <polyline points="7 10 12 15 17 10"/>
                     <line x1="12" y1="15" x2="12" y2="3"/>
@@ -94,18 +94,19 @@
         </main>
 
         <footer>
-            <small>Unificador SEDAPAL &copy; <span id="current-year"></span> — Todas las páginas se procesan localmente en tu navegador.</small>
+            <p>Unificador SEDAPAL &copy; <span id="current-year"></span> — Herramienta de compilación documental</p>
         </footer>
     </div>
 
     <!-- Overlay de carga -->
-    <div id="loading-overlay" class="overlay hidden" role="alert" aria-live="assertive">
-        <div class="loader" aria-hidden="true"></div>
-        <p id="loading-text">Procesando...</p>
-        <progress id="progress-bar" value="0" max="100" aria-label="Progreso del procesamiento"></progress>
+    <div id="loading-overlay" class="overlay hidden" role="alertdialog" aria-live="assertive">
+        <div class="loader"></div>
+        <div id="loading-text">Procesando...</div>
+        <progress id="progress-bar" value="0" max="100" class="hidden"></progress>
     </div>
 
-    <!-- Script principal (defer garantiza que corre después de los CDN) -->
-    <script defer src="index.js"></script>
+    <!-- Contenedor de notificaciones toast -->
+    <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
 </body>
 </html>
