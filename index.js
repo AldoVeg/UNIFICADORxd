@@ -1,7 +1,6 @@
-/* ═══════════════════════════════════════════════
-   index.js — UNIFICADOR SEDAPAL (Fortificado v3)
-   IIFE estricto · Foleo normal + inverso · Memoria
-   controlada · Selección múltiple · Atajos teclado
+ /* ═══════════════════════════════════════════════
+   index.js — UNIFICADOR SEDAPAL (Fortificado v4)
+   IIFE estricto · MultiDrag nativo · Foleo inverso
    ═══════════════════════════════════════════════ */
 
 (function () {
@@ -16,243 +15,154 @@
 
   function init() {
 
-    /* ── Validación de CDNs ── */
+    /* ── Validación del motor PDF.js ── */
     if (typeof pdfjsLib === 'undefined') {
       var banner = document.getElementById('cdn-error');
       if (banner) banner.classList.remove('hidden');
       return;
     }
-
     pdfjsLib.GlobalWorkerOptions.workerSrc =
       'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
 
-    if (typeof PDFLib === 'undefined') {
-      var banner2 = document.getElementById('cdn-error');
-      if (banner2) banner2.classList.remove('hidden');
-      return;
-    }
-
     /* ── Referencias DOM cacheadas ── */
-    var DOM = {
-      workspace:        document.getElementById('workspace'),
-      btnGenerate:      document.getElementById('btn-generate'),
-      overlay:          document.getElementById('loading-overlay'),
-      loadingText:      document.getElementById('loading-text'),
-      progressBar:      document.getElementById('progress-bar'),
-      dropZone:         document.getElementById('drop-zone'),
-      fileInput:        document.getElementById('file-input'),
-      chkFoleo:         document.getElementById('chk-foleo'),
-      chkFoleoInverso:  document.getElementById('chk-foleo-inverso'),
-      lblFoleoInverso:  document.getElementById('lbl-foleo-inverso'),
-      chkOptimize:      document.getElementById('chk-optimize'),
-      folioStart:       document.getElementById('folio-start'),
-      currentYear:      document.getElementById('current-year')
-    };
+    var workspace   = document.getElementById('workspace');
+    var btnGenerate = document.getElementById('btn-generate');
+    var overlay     = document.getElementById('loading-overlay');
+    var textStatus  = document.getElementById('loading-text');
+    var progressBar = document.getElementById('progress-bar');
+    var dropZone    = document.getElementById('drop-zone');
+    var fileInput   = document.getElementById('file-input');
+    var chkFoleo    = document.getElementById('chk-foleo');
+    var chkFoleoInv = document.getElementById('chk-foleo-inverso');
+    var folioStart  = document.getElementById('folio-start');
+    var chkOptimize = document.getElementById('chk-optimize');
 
     /* ── Estado interno ── */
-    var pdfDocumentsData = new Map();   // fileId → ArrayBuffer
-    var pageRegistry = [];              // [{ id, fileId, pageIndex, rotation, thumb }]
-    var revokedUrls = new Set();        // tracking de ObjectURLs
+    var pdfDocumentsData = new Map();
+    var pageRegistry     = [];
+    var revokedUrls      = new Set();
 
-    /* ── Año dinámico en footer ── */
-    if (DOM.currentYear) {
-      DOM.currentYear.textContent = new Date().getFullYear();
-    }
-
-    /* ── Generador de IDs ── */
     function generateId() {
       if (typeof crypto !== 'undefined' && crypto.randomUUID) {
         return crypto.randomUUID();
       }
-      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
-        var r = Math.random() * 16 | 0;
-        var v = c === 'x' ? r : (r & 0x3 | 0x8);
-        return v.toString(16);
-      });
+      return Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
     }
 
     /* ═══════════════════════════════════════════════
-       TOAST / LOADER / PROGRESS
+       SORTABLE CON MULTIDRAG NATIVO
        ═══════════════════════════════════════════════ */
 
-    function showToast(msg, type) {
-      var container = document.getElementById('toast-container');
-      if (!container) return;
-      var toast = document.createElement('div');
-      toast.className = 'toast toast-' + (type || 'info');
-      toast.textContent = msg;
-      toast.addEventListener('click', function () {
-        toast.classList.add('toast-out');
-        setTimeout(function () { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 300);
-      });
-      container.appendChild(toast);
-      setTimeout(function () {
-        if (toast.parentNode) {
-          toast.classList.add('toast-out');
-          setTimeout(function () { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 300);
+    // Montar el plugin MultiDrag (incluido en sortablejs@latest)
+    if (typeof Sortable !== 'undefined' && Sortable.MultiDrag) {
+      Sortable.mount(new Sortable.MultiDrag());
+    }
+
+    try {
+      new Sortable(workspace, {
+        animation: 150,
+        ghostClass: 'sortable-ghost',
+        chosenClass: 'sortable-chosen',
+        delay: 100,
+        delayOnTouchOnly: true,
+
+        // ── MultiDrag nativo ──
+        multiDrag: true,
+        selectedClass: 'selected',
+        // Sin multiDragKey: clic simple selecciona/deselecciona
+        // Shift+Click para rango, Ctrl+Click para añadir/quitar
+
+        onEnd: function () {
+          syncRegistryWithDOM();
         }
-      }, 5000);
-    }
-
-    function showLoader(msg, withProgress) {
-      if (!DOM.overlay) return;
-      DOM.loadingText.textContent = msg || 'Procesando...';
-      DOM.overlay.classList.remove('hidden');
-      if (withProgress) {
-        DOM.progressBar.classList.remove('hidden');
-        DOM.progressBar.value = 0;
-      } else {
-        DOM.progressBar.classList.add('hidden');
-      }
-    }
-
-    function updateProgress(current, total) {
-      if (!DOM.progressBar || DOM.progressBar.classList.contains('hidden')) return;
-      DOM.progressBar.value = Math.round((current / total) * 100);
-    }
-
-    function hideLoader() {
-      if (!DOM.overlay) return;
-      DOM.overlay.classList.add('hidden');
-      DOM.progressBar.classList.add('hidden');
-    }
-
-    /* ── Timeout de seguridad para el loader ── */
-    var loaderTimeout = null;
-    function startLoaderTimeout() {
-      clearLoaderTimeout();
-      loaderTimeout = setTimeout(function () {
-        hideLoader();
-        showToast('La operación está tardando más de lo esperado. Verifica tus archivos.', 'warning');
-      }, 90000);
-    }
-    function clearLoaderTimeout() {
-      if (loaderTimeout) { clearTimeout(loaderTimeout); loaderTimeout = null; }
+      });
+    } catch (e) {
+      console.warn('SortableJS no disponible — la app funciona sin arrastre.');
     }
 
     /* ═══════════════════════════════════════════════
-       VALIDACIÓN DE MAGIC BYTES (%PDF)
+       EVENTOS DE CARGA DE ARCHIVOS
        ═══════════════════════════════════════════════ */
 
+    dropZone.addEventListener('click', function () { fileInput.click(); });
+
+    ['dragover', 'dragenter'].forEach(function (evName) {
+      dropZone.addEventListener(evName, function (e) {
+        e.preventDefault();
+        dropZone.classList.add('drag-over');
+      });
+    });
+
+    ['dragleave', 'drop'].forEach(function (evName) {
+      dropZone.addEventListener(evName, function (e) {
+        e.preventDefault();
+        dropZone.classList.remove('drag-over');
+      });
+    });
+
+    dropZone.addEventListener('drop', function (e) {
+      processFiles(e.dataTransfer.files);
+    });
+
+    fileInput.addEventListener('change', function (e) {
+      processFiles(e.target.files);
+    });
+
+    /* ═══════════════════════════════════════════════
+       TECLADO: Supr/Escape/Ctrl+A
+       ═══════════════════════════════════════════════ */
+    document.addEventListener('keydown', function (e) {
+      // No interceptar si el foco está en un input/select
+      var tag = document.activeElement ? document.activeElement.tagName : '';
+      var isEditable = (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA');
+
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (isEditable) return;
+        var selected = workspace.querySelectorAll('.page-card.selected');
+        if (selected.length > 0) {
+          selected.forEach(function (card) { card.remove(); });
+          syncRegistryWithDOM();
+          e.preventDefault();
+        }
+      }
+
+      if (e.key === 'Escape') {
+        workspace.querySelectorAll('.page-card.selected').forEach(function (c) {
+          c.classList.remove('selected');
+        });
+      }
+
+      if (e.ctrlKey && e.key === 'a') {
+        if (isEditable) return;
+        e.preventDefault();
+        Array.from(workspace.children).forEach(function (card) {
+          card.classList.add('selected');
+        });
+      }
+    });
+
+    /* ═══════════════════════════════════════════════
+       MOSTRAR/OCULTAR FOLEO INVERSO
+       ═══════════════════════════════════════════════ */
+    if (chkFoleo && chkFoleoInv) {
+      chkFoleo.addEventListener('change', function () {
+        if (this.checked) {
+          chkFoleoInv.parentElement.style.display = '';
+        } else {
+          chkFoleoInv.parentElement.style.display = 'none';
+          chkFoleoInv.checked = false;
+        }
+      });
+    }
+
+    /* ═══════════════════════════════════════════════
+       PROCESAR ARCHIVOS PDF
+       ═══════════════════════════════════════════════ */
     function isValidPDF(buffer) {
-      if (!buffer || buffer.byteLength < 5) return false;
-      var arr = new Uint8Array(buffer);
+      if (buffer.byteLength < 5) return false;
+      var arr = new Uint8Array(buffer, 0, 5);
       return arr[0] === 0x25 && arr[1] === 0x50 && arr[2] === 0x44 && arr[3] === 0x46; // %PDF
     }
-
-    /* ═══════════════════════════════════════════════
-       SINCRONIZACIÓN REGISTRO ↔ DOM
-       ═══════════════════════════════════════════════ */
-
-    function syncRegistryWithDOM() {
-      var newOrder = [];
-      Array.from(DOM.workspace.children).forEach(function (card) {
-        var record = pageRegistry.find(function (p) { return p.id === card.dataset.id; });
-        if (record) newOrder.push(record);
-      });
-      pageRegistry = newOrder;
-      DOM.btnGenerate.disabled = pageRegistry.length === 0;
-
-      // Limpiar documentos huérfanos
-      var activeFileIds = new Set(pageRegistry.map(function (p) { return p.fileId; }));
-      pdfDocumentsData.forEach(function (_, fileId) {
-        if (!activeFileIds.has(fileId)) pdfDocumentsData.delete(fileId);
-      });
-    }
-
-    /* ═══════════════════════════════════════════════
-       CREACIÓN DE TARJETAS EN EL DOM
-       ═══════════════════════════════════════════════ */
-
-    function createCardInDOM(data) {
-      var card = document.createElement('div');
-      card.className = 'page-card';
-      card.dataset.id = data.id;
-      card.tabIndex = 0;
-
-      // Selección múltiple con clic
-      card.addEventListener('click', function (e) {
-        if (e.target.classList.contains('btn-delete-page')) return;
-        card.classList.toggle('selected');
-      });
-
-      // Botón de borrado individual
-      var btnDel = document.createElement('button');
-      btnDel.className = 'btn-delete-page';
-      btnDel.innerHTML = '✖';
-      btnDel.setAttribute('aria-label', 'Eliminar página');
-      btnDel.onclick = function (e) {
-        e.stopPropagation();
-        var selected = document.querySelectorAll('.page-card.selected');
-        if (selected.length > 0 && card.classList.contains('selected')) {
-          selected.forEach(function (c) { c.remove(); });
-        } else {
-          card.remove();
-        }
-        syncRegistryWithDOM();
-      };
-
-      // Imagen miniatura
-      var img = document.createElement('img');
-      img.className = 'page-image';
-      img.src = data.thumb;
-      img.dataset.rotation = 0;
-      img.alt = 'Miniatura de página';
-
-      // Rotación con doble clic
-      card.ondblclick = function (e) {
-        e.stopPropagation();
-        var currentRot = (parseInt(img.dataset.rotation, 10) + 90) % 360;
-        img.dataset.rotation = currentRot;
-        img.style.transform = 'rotate(' + currentRot + 'deg)';
-
-        var regIndex = pageRegistry.findIndex(function (p) { return p.id === data.id; });
-        if (regIndex > -1) pageRegistry[regIndex].rotation = currentRot;
-      };
-
-      card.appendChild(btnDel);
-      card.appendChild(img);
-      DOM.workspace.appendChild(card);
-    }
-
-    /* ═══════════════════════════════════════════════
-       TARJETA DE PÁGINA FALLIDA
-       ═══════════════════════════════════════════════ */
-
-    function createFailedCard(fileId, pageNum) {
-      var card = document.createElement('div');
-      card.className = 'page-card page-failed';
-      card.dataset.id = generateId();
-      card.tabIndex = 0;
-      card.title = 'Página ' + pageNum + ' — Error al renderizar';
-
-      var icon = document.createElement('span');
-      icon.className = 'failed-icon';
-      icon.textContent = '⚠️';
-
-      var label = document.createElement('span');
-      label.className = 'failed-label';
-      label.textContent = 'Pág. ' + pageNum;
-
-      var btnDel = document.createElement('button');
-      btnDel.className = 'btn-delete-page';
-      btnDel.innerHTML = '✖';
-      btnDel.setAttribute('aria-label', 'Eliminar página fallida');
-      btnDel.onclick = function (e) {
-        e.stopPropagation();
-        card.remove();
-        syncRegistryWithDOM();
-      };
-
-      card.appendChild(btnDel);
-      card.appendChild(icon);
-      card.appendChild(label);
-      DOM.workspace.appendChild(card);
-    }
-
-    /* ═══════════════════════════════════════════════
-       PROCESAMIENTO DE ARCHIVOS PDF
-       ═══════════════════════════════════════════════ */
 
     async function processFiles(files) {
       var pdfs = Array.from(files).filter(function (f) {
@@ -260,46 +170,34 @@
       });
 
       if (pdfs.length === 0) {
-        showToast('Por favor, sube únicamente archivos en formato PDF.', 'warning');
+        showToast('Por favor, sube únicamente archivos en formato PDF.', 'error');
         return;
       }
 
       showLoader('Procesando páginas...', true);
-      startLoaderTimeout();
-      DOM.btnGenerate.disabled = true;
+      btnGenerate.disabled = true;
 
       for (var f = 0; f < pdfs.length; f++) {
         var file = pdfs[f];
         var fileId = generateId();
-        var buffer;
-
-        try {
-          buffer = await file.arrayBuffer();
-        } catch (err) {
-          showToast('Error al leer: ' + file.name, 'error');
-          continue;
-        }
+        var buffer = await file.arrayBuffer();
 
         if (!isValidPDF(buffer)) {
-          showToast(file.name + ' no es un PDF válido. Se omitirá.', 'warning');
+          showToast('El archivo "' + file.name + '" no es un PDF válido. Se omitió.', 'warning');
           continue;
         }
 
         pdfDocumentsData.set(fileId, buffer);
 
-        var loadingTask = null;
-        var pdf = null;
-
         try {
-          loadingTask = pdfjsLib.getDocument({ data: buffer.slice(0) });
-          pdf = await loadingTask.promise;
+          var loadingTask = pdfjsLib.getDocument({ data: buffer });
+          var pdf = await loadingTask.promise;
           var totalPages = pdf.numPages;
 
           for (var i = 1; i <= totalPages; i++) {
             updateProgress(i, totalPages);
 
-            // Micro-pausa cada 5 páginas para liberar el event loop
-            if (i % 5 === 0) await new Promise(function (r) { return setTimeout(r, 1); });
+            if (i % 5 === 0) await new Promise(function (r) { setTimeout(r, 1); });
 
             var pageId = fileId + '_' + i;
 
@@ -309,73 +207,160 @@
               var canvas = document.createElement('canvas');
               canvas.width = viewport.width;
               canvas.height = viewport.height;
-              var ctx = canvas.getContext('2d');
-              await page.render({ canvasContext: ctx, viewport: viewport }).promise;
-
-              var thumb = canvas.toDataURL('image/jpeg', 0.5);
-
-              // Liberar canvas
-              canvas.width = 0;
-              canvas.height = 0;
+              await page.render({
+                canvasContext: canvas.getContext('2d'),
+                viewport: viewport
+              }).promise;
 
               var nodeData = {
                 id: pageId,
                 fileId: fileId,
                 pageIndex: i - 1,
                 rotation: 0,
-                thumb: thumb
+                thumb: canvas.toDataURL('image/jpeg', 0.5)
               };
+
+              canvas.width = 0;
+              canvas.height = 0;
 
               pageRegistry.push(nodeData);
               createCardInDOM(nodeData);
-
             } catch (pageErr) {
-              console.warn('Error en página ' + i + ' de ' + file.name + ':', pageErr);
-              createFailedCard(fileId, i);
+              console.error('Error en página ' + i + ' de ' + file.name + ':', pageErr);
+              createFailedCard(fileId, i, file.name);
             }
           }
+
+          await pdf.destroy();
+          await loadingTask.destroy();
         } catch (docErr) {
-          console.error('Error al abrir PDF ' + file.name + ':', docErr);
-          showToast('No se pudo procesar: ' + file.name, 'error');
-        } finally {
-          // Liberar recursos de pdf.js
-          if (pdf && typeof pdf.destroy === 'function') {
-            try { pdf.destroy(); } catch (e) { /* silencioso */ }
-          }
-          if (loadingTask && typeof loadingTask.destroy === 'function') {
-            try { loadingTask.destroy(); } catch (e) { /* silencioso */ }
-          }
+          console.error('Error al leer el PDF ' + file.name + ':', docErr);
+          showToast('No se pudo leer "' + file.name + '". Puede estar corrupto.', 'error');
         }
       }
 
-      DOM.btnGenerate.disabled = pageRegistry.length === 0;
-      clearLoaderTimeout();
+      btnGenerate.disabled = pageRegistry.length === 0;
       hideLoader();
-      DOM.fileInput.value = '';
+      fileInput.value = '';
+
+      if (pageRegistry.length === 0 && pdfDocumentsData.size > 0) {
+        pdfDocumentsData.clear();
+      }
+    }
+
+    /* ═══════════════════════════════════════════════
+       TARJETAS EN EL DOM
+       ═══════════════════════════════════════════════ */
+
+    function createCardInDOM(data) {
+      var card = document.createElement('div');
+      card.className = 'page-card';
+      card.dataset.id = data.id;
+
+      // ── NOTA: El clic para seleccionar/deseleccionar lo maneja MultiDrag nativo ──
+      // No se agrega listener de click manual — Sortable con selectedClass: 'selected' lo gestiona
+
+      var btnDel = document.createElement('button');
+      btnDel.className = 'btn-delete-page';
+      btnDel.innerHTML = '&#10006;';
+      btnDel.setAttribute('aria-label', 'Eliminar página');
+      btnDel.onclick = function (e) {
+        e.stopPropagation();
+        e.preventDefault();
+
+        var selected = workspace.querySelectorAll('.page-card.selected');
+        if (selected.length > 0 && card.classList.contains('selected')) {
+          selected.forEach(function (c) { c.remove(); });
+        } else {
+          card.remove();
+        }
+        syncRegistryWithDOM();
+      };
+
+      var img = document.createElement('img');
+      img.className = 'page-image';
+      img.src = data.thumb;
+      img.dataset.rotation = '0';
+      img.draggable = false;
+
+      // Rotación con doble clic
+      card.addEventListener('dblclick', function (e) {
+        e.stopPropagation();
+        var currentRot = (parseInt(img.dataset.rotation, 10) + 90) % 360;
+        img.dataset.rotation = currentRot;
+        img.style.transform = 'rotate(' + currentRot + 'deg)';
+
+        var regIndex = pageRegistry.findIndex(function (p) { return p.id === data.id; });
+        if (regIndex > -1) pageRegistry[regIndex].rotation = currentRot;
+      });
+
+      card.appendChild(btnDel);
+      card.appendChild(img);
+      workspace.appendChild(card);
+    }
+
+    function createFailedCard(fileId, pageNum, fileName) {
+      var card = document.createElement('div');
+      card.className = 'page-card page-failed';
+      card.dataset.id = fileId + '_failed_' + pageNum;
+      card.title = 'Página ' + pageNum + ' de ' + fileName + ' — Error al renderizar';
+
+      var icon = document.createElement('span');
+      icon.style.cssText = 'font-size:28px;';
+      icon.textContent = '\u26A0\uFE0F';
+
+      var label = document.createElement('span');
+      label.style.cssText = 'font-size:10px;color:#e03131;text-align:center;padding:4px;';
+      label.textContent = 'Pág ' + pageNum + '\nError';
+
+      var btnDel = document.createElement('button');
+      btnDel.className = 'btn-delete-page';
+      btnDel.innerHTML = '&#10006;';
+      btnDel.setAttribute('aria-label', 'Eliminar');
+      btnDel.onclick = function (e) {
+        e.stopPropagation();
+        e.preventDefault();
+        card.remove();
+        syncRegistryWithDOM();
+      };
+
+      card.appendChild(btnDel);
+      card.appendChild(icon);
+      card.appendChild(label);
+      workspace.appendChild(card);
+    }
+
+    function syncRegistryWithDOM() {
+      var newOrder = [];
+      Array.from(workspace.children).forEach(function (card) {
+        var record = pageRegistry.find(function (p) { return p.id === card.dataset.id; });
+        if (record) newOrder.push(record);
+      });
+      pageRegistry = newOrder;
+      btnGenerate.disabled = pageRegistry.length === 0;
+
+      // Limpiar documentos huérfanos
+      if (pageRegistry.length === 0) {
+        pdfDocumentsData.clear();
+      }
     }
 
     /* ═══════════════════════════════════════════════
        GENERACIÓN DEL PDF UNIFICADO
        ═══════════════════════════════════════════════ */
-
-    async function generatePDF() {
+    btnGenerate.addEventListener('click', async function () {
       if (pageRegistry.length === 0) return;
 
       showLoader('Compilando documento final...', true);
-      startLoaderTimeout();
+      var applyFoleo    = chkFoleo ? chkFoleo.checked : false;
+      var applyInv      = chkFoleoInv ? chkFoleoInv.checked : false;
+      var optimize      = chkOptimize ? chkOptimize.checked : true;
+      var folioNum      = folioStart ? (parseInt(folioStart.value, 10) || 1) : 1;
+      var totalPages    = pageRegistry.length;
 
-      var applyFoleo        = DOM.chkFoleo ? DOM.chkFoleo.checked : false;
-      var applyFoleoInverso = applyFoleo && DOM.chkFoleoInverso ? DOM.chkFoleoInverso.checked : false;
-      var optimize          = DOM.chkOptimize ? DOM.chkOptimize.checked : true;
-      var folioNum          = parseInt(DOM.folioStart.value, 10) || 1;
-      var totalPages        = pageRegistry.length;
-
-      // ── Cálculo de folio inicial para modo inverso ──
-      // En modo inverso, la última página recibe el número más bajo (folioNum)
-      // y la primera página recibe el número más alto (folioNum + totalPages - 1)
+      // Si foleo inverso: la primera página recibe el número más alto
       var folioActual;
-      if (applyFoleoInverso) {
-        // Empezamos desde el número más alto y decrementamos
+      if (applyFoleo && applyInv) {
         folioActual = folioNum + totalPages - 1;
       } else {
         folioActual = folioNum;
@@ -385,33 +370,25 @@
         var finalPdf = await PDFLib.PDFDocument.create();
         var loadedDocs = new Map();
 
-        // Cargar cada documento fuente una sola vez
         for (var _i = 0, _keys = Array.from(pdfDocumentsData.keys()); _i < _keys.length; _i++) {
-          var fileId = _keys[_i];
-          var buffer = pdfDocumentsData.get(fileId);
-          loadedDocs.set(fileId, await PDFLib.PDFDocument.load(buffer, { ignoreEncryption: true }));
+          var fid = _keys[_i];
+          loadedDocs.set(fid, await PDFLib.PDFDocument.load(pdfDocumentsData.get(fid), {
+            ignoreEncryption: true
+          }));
         }
 
         var font = await finalPdf.embedFont(PDFLib.StandardFonts.HelveticaBold);
 
-        for (var i = 0; i < totalPages; i++) {
-          updateProgress(i, totalPages);
+        for (var i = 0; i < pageRegistry.length; i++) {
+          updateProgress(i, pageRegistry.length);
 
-          // Chunking cada 10 páginas
-          if (i % 10 === 0) await new Promise(function (r) { return setTimeout(r, 1); });
+          if (i % 10 === 0) await new Promise(function (r) { setTimeout(r, 1); });
 
           var req = pageRegistry[i];
           var srcDoc = loadedDocs.get(req.fileId);
           if (!srcDoc) continue;
 
-          var copiedPages;
-          try {
-            copiedPages = await finalPdf.copyPages(srcDoc, [req.pageIndex]);
-          } catch (copyErr) {
-            console.warn('Error al copiar página ' + (i + 1) + ':', copyErr);
-            continue;
-          }
-
+          var copiedPages = await finalPdf.copyPages(srcDoc, [req.pageIndex]);
           var copiedPage = copiedPages[0];
 
           if (req.rotation !== 0) {
@@ -421,36 +398,29 @@
 
           finalPdf.addPage(copiedPage);
 
-          // ── FOLEO (normal o inverso) ──
           if (applyFoleo) {
             var fStr = String(folioActual).padStart(3, '0');
             var size = copiedPage.getSize();
-            var pageWidth = size.width;
-            var pageHeight = size.height;
+            var w = size.width;
+            var h = size.height;
 
-            // Rectángulo blanco de fondo
             copiedPage.drawRectangle({
-              x: pageWidth - 40,
-              y: pageHeight - 25,
-              width: 30,
-              height: 16,
+              x: w - 40, y: h - 25,
+              width: 30, height: 16,
               color: PDFLib.rgb(1, 1, 1)
             });
 
-            // Número de folio
             copiedPage.drawText(fStr, {
-              x: pageWidth - 36,
-              y: pageHeight - 21,
-              size: 11,
-              font: font,
+              x: w - 36, y: h - 21,
+              size: 11, font: font,
               color: PDFLib.rgb(0, 0, 0)
             });
 
-            // Avanzar o retroceder según el modo
-            if (applyFoleoInverso) {
-              folioActual--;  // Decrementa: última página = número más bajo
+            // Foleo inverso: decrementa; normal: incrementa
+            if (applyInv) {
+              folioActual--;
             } else {
-              folioActual++;  // Incrementa: primera página = número más bajo
+              folioActual++;
             }
           }
         }
@@ -469,115 +439,90 @@
         link.click();
         document.body.removeChild(link);
 
-        // Revocar después de un tiempo prudencial
         setTimeout(function () {
           URL.revokeObjectURL(url);
           revokedUrls.delete(url);
         }, 3000);
 
         showToast('PDF unificado generado exitosamente.', 'success');
-
       } catch (e) {
         console.error('Error en unificación:', e);
         showToast('Error crítico durante la unificación: ' + e.message, 'error');
       } finally {
-        clearLoaderTimeout();
         hideLoader();
       }
-    }
+    });
 
     /* ═══════════════════════════════════════════════
-       EVENT LISTENERS
+       LOADER / PROGRESS / TOAST
        ═══════════════════════════════════════════════ */
+    var loaderTimeout = null;
 
-    // ── Zona de carga ──
-    DOM.dropZone.addEventListener('click', function () { DOM.fileInput.click(); });
-
-    ['dragover', 'dragenter'].forEach(function (evName) {
-      DOM.dropZone.addEventListener(evName, function (ev) {
-        ev.preventDefault();
-        DOM.dropZone.classList.add('drag-over');
-      });
-    });
-
-    ['dragleave', 'drop'].forEach(function (evName) {
-      DOM.dropZone.addEventListener(evName, function (ev) {
-        ev.preventDefault();
-        DOM.dropZone.classList.remove('drag-over');
-      });
-    });
-
-    DOM.dropZone.addEventListener('drop', function (ev) { processFiles(ev.dataTransfer.files); });
-    DOM.fileInput.addEventListener('change', function (ev) { processFiles(ev.target.files); });
-
-    // ── Mostrar/ocultar checkbox de foleo inverso ──
-    if (DOM.chkFoleo && DOM.lblFoleoInverso) {
-      DOM.chkFoleo.addEventListener('change', function () {
-        DOM.lblFoleoInverso.style.display = this.checked ? '' : 'none';
-        if (!this.checked && DOM.chkFoleoInverso) {
-          DOM.chkFoleoInverso.checked = false;
-        }
-      });
+    function showLoader(msg, withProgress) {
+      if (!overlay) return;
+      textStatus.textContent = msg || 'Procesando...';
+      overlay.classList.remove('hidden');
+      if (withProgress) {
+        progressBar.classList.remove('hidden');
+        progressBar.value = 0;
+      } else {
+        progressBar.classList.add('hidden');
+      }
+      // Timeout de seguridad: 90s
+      if (loaderTimeout) clearTimeout(loaderTimeout);
+      loaderTimeout = setTimeout(function () {
+        hideLoader();
+        showToast('La operación está tardando más de lo esperado. Verifica tu conexión.', 'warning');
+      }, 90000);
     }
 
-    // ── Atajos de teclado ──
-    document.addEventListener('keydown', function (e) {
-      // No interceptar cuando el foco está en un input/select/textarea
-      var tag = document.activeElement ? document.activeElement.tagName : '';
-      var isEditable = tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' ||
-                       (document.activeElement && document.activeElement.isContentEditable);
+    function updateProgress(current, total) {
+      if (!progressBar || progressBar.classList.contains('hidden')) return;
+      progressBar.value = Math.round((current / total) * 100);
+    }
 
-      if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (isEditable) return;
-        var selected = document.querySelectorAll('.page-card.selected');
-        if (selected.length > 0) {
-          selected.forEach(function (card) { card.remove(); });
-          syncRegistryWithDOM();
-          e.preventDefault();
-        }
-      }
-
-      if (e.key === 'a' && (e.ctrlKey || e.metaKey)) {
-        if (isEditable) return;
-        e.preventDefault();
-        var allCards = document.querySelectorAll('.page-card:not(.page-failed)');
-        allCards.forEach(function (card) { card.classList.add('selected'); });
-      }
-
-      if (e.key === 'Escape') {
-        var allSelected = document.querySelectorAll('.page-card.selected');
-        allSelected.forEach(function (card) { card.classList.remove('selected'); });
-      }
-    });
-
-    // ── SortableJS (arrastre visual) ──
-    if (typeof Sortable !== 'undefined') {
-      try {
-        new Sortable(DOM.workspace, {
-          animation: 150,
-          ghostClass: 'sortable-ghost',
-          chosenClass: 'sortable-chosen',
-          delay: 100,
-          delayOnTouchOnly: true,
-          onEnd: function () { syncRegistryWithDOM(); }
-        });
-      } catch (sortErr) {
-        console.warn('SortableJS no pudo inicializarse. El orden manual por arrastre no estará disponible.', sortErr);
+    function hideLoader() {
+      if (!overlay) return;
+      overlay.classList.add('hidden');
+      progressBar.classList.add('hidden');
+      if (loaderTimeout) {
+        clearTimeout(loaderTimeout);
+        loaderTimeout = null;
       }
     }
 
-    // ── Botón generar ──
-    DOM.btnGenerate.addEventListener('click', generatePDF);
+    function showToast(msg, type) {
+      var container = document.getElementById('toast-container');
+      if (!container) return;
+      var toast = document.createElement('div');
+      toast.className = 'toast toast-' + (type || 'error');
+      toast.textContent = msg;
+      toast.addEventListener('click', function () {
+        toast.classList.add('toast-out');
+        setTimeout(function () {
+          if (toast.parentNode) toast.parentNode.removeChild(toast);
+        }, 300);
+      });
+      container.appendChild(toast);
+      setTimeout(function () {
+        if (toast.parentNode) {
+          toast.classList.add('toast-out');
+          setTimeout(function () {
+            if (toast.parentNode) toast.parentNode.removeChild(toast);
+          }, 300);
+        }
+      }, 5000);
+    }
 
-    // ── Limpieza de ObjectURLs al salir ──
+    /* ── Limpieza de memoria al salir ── */
     window.addEventListener('beforeunload', function () {
       revokedUrls.forEach(function (url) {
-        try { URL.revokeObjectURL(url); } catch (e) { /* silencioso */ }
+        URL.revokeObjectURL(url);
       });
       revokedUrls.clear();
     });
 
-    console.log('✅ UNIFICADOR SEDAPAL — inicializado correctamente.');
+    console.log('✅ UNIFICADOR SEDAPAL v4 — inicializado con MultiDrag nativo.');
   }
 
 })();
